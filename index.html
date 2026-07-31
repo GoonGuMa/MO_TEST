@@ -146,9 +146,112 @@
         }
 
         .updated-at {
-            flex: 0 0 auto;
             color: #8a94a6;
             font-size: 12px;
+        }
+
+        .intro-side {
+            display: flex;
+            flex: 0 0 auto;
+            align-items: flex-end;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .tetris-link {
+            position: relative;
+            width: 280px;
+            min-height: 112px;
+            display: flex;
+            overflow: hidden;
+            align-items: center;
+            justify-content: space-between;
+            padding: 22px 23px;
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 16px;
+            color: #fff;
+            background:
+                radial-gradient(circle at 88% 18%, rgba(255, 255, 255, 0.22), transparent 28%),
+                linear-gradient(135deg, #7657e6, #5837bd);
+            box-shadow: 0 15px 32px rgba(91, 68, 196, 0.24);
+            text-decoration: none;
+            transition: transform 160ms ease, box-shadow 160ms ease;
+        }
+
+        .tetris-link:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 20px 38px rgba(91, 68, 196, 0.32);
+        }
+
+        .tetris-link:focus-visible {
+            outline: 3px solid rgba(91, 91, 214, 0.25);
+            outline-offset: 3px;
+        }
+
+        .tetris-link-copy {
+            position: relative;
+            z-index: 1;
+        }
+
+        .tetris-link-kicker {
+            display: block;
+            margin-bottom: 8px;
+            color: rgba(255, 255, 255, 0.72);
+            font-size: 9px;
+            font-weight: 850;
+            letter-spacing: 0.13em;
+            text-transform: uppercase;
+        }
+
+        .tetris-link-title {
+            display: block;
+            font-size: 17px;
+            font-weight: 900;
+            letter-spacing: -0.035em;
+        }
+
+        .tetris-arrow {
+            position: relative;
+            z-index: 1;
+            width: 32px;
+            height: 32px;
+            display: grid;
+            flex: 0 0 auto;
+            place-items: center;
+            border-radius: 9px;
+            background: rgba(255, 255, 255, 0.15);
+            font-size: 16px;
+        }
+
+        .tetris-blocks {
+            position: absolute;
+            right: 15px;
+            bottom: -16px;
+            width: 88px;
+            height: 70px;
+            opacity: 0.13;
+            transform: rotate(-8deg);
+        }
+
+        .tetris-blocks::before,
+        .tetris-blocks::after {
+            position: absolute;
+            width: 24px;
+            height: 24px;
+            border: 4px solid #fff;
+            content: "";
+        }
+
+        .tetris-blocks::before {
+            left: 8px;
+            bottom: 8px;
+            box-shadow: 28px 0 0 -4px transparent, 28px 0 0 0 #fff;
+        }
+
+        .tetris-blocks::after {
+            right: 0;
+            bottom: 36px;
+            box-shadow: -28px 0 0 0 #fff;
         }
 
         .summary-grid {
@@ -685,6 +788,15 @@
                 flex-direction: column;
             }
 
+            .intro-side {
+                width: 100%;
+                align-items: flex-start;
+            }
+
+            .tetris-link {
+                width: 100%;
+            }
+
             .summary-grid {
                 grid-template-columns: 1fr;
             }
@@ -771,7 +883,17 @@
                     ApexCharts로 구성한 인터랙티브 대시보드입니다.
                 </p>
             </div>
-            <span class="updated-at" id="updated-at">Mock data 불러오는 중</span>
+            <div class="intro-side">
+                <a class="tetris-link" href="/tetris">
+                    <span class="tetris-link-copy">
+                        <span class="tetris-link-kicker">Play a quick game</span>
+                        <span class="tetris-link-title">테트리스 하러가기</span>
+                    </span>
+                    <span class="tetris-arrow" aria-hidden="true">→</span>
+                    <span class="tetris-blocks" aria-hidden="true"></span>
+                </a>
+                <span class="updated-at" id="updated-at">Mock data 불러오는 중</span>
+            </div>
         </section>
 
         <section class="summary-grid" id="summary-grid" aria-label="대시보드 요약"></section>
