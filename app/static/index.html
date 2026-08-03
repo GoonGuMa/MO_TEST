@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="뉴스 이벤트로 움직이는 교육용 모의투자">
+  <title>MARKET LAB — 뉴스 기반 모의투자</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Market Lab 홈">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span><strong>MARKET LAB</strong><small>NEWS-DRIVEN SIMULATION</small></span>
+    </a>
+    <div class="topbar-center">
+      <span class="market-dot"></span>
+      <span>가상 시장 운영 중</span>
+      <b id="topbar-time">--:--:--</b>
+    </div>
+    <div class="topbar-user"><span id="header-user">STUDENT</span><div class="avatar">S</div></div>
+  </header>
+
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <div class="eyebrow"><span>SIMULATION</span> 실제 시세 API를 사용하지 않습니다</div>
+        <h1>뉴스로 움직이는<br><em>모의투자 시장</em></h1>
+        <p>15초 기본 변동과 뉴스 급등락을 관찰하고, 투자 판단과 리스크 관리를 연습하세요.</p>
+      </div>
+      <div class="hero-rule">
+        <div><small>NORMAL TICK</small><strong>±0.1~1%</strong><span>15초마다</span></div>
+        <i></i>
+        <div><small>NEWS IMPACT</small><strong>±15~25%</strong><span>발행 즉시</span></div>
+        <div class="next-tick"><span>다음 변동</span><b id="countdown">--초</b></div>
+      </div>
+    </section>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+    <section class="account-grid" aria-label="계좌 요약">
+      <article><div class="stat-icon navy">₩</div><div><span>총 자산</span><strong id="total-assets">-</strong><small id="total-profit">-</small></div></article>
+      <article><div class="stat-icon blue">↔</div><div><span>주문 가능 현금</span><strong id="cash">-</strong><small>초기자금 100,000,000원</small></div></article>
+      <article><div class="stat-icon mint">▥</div><div><span>주식 평가금액</span><strong id="stock-value">-</strong><small id="position-count">보유 종목 0개</small></div></article>
+      <article><div class="stat-icon orange">◎</div><div><span>투자 수익률</span><strong id="return-rate">-</strong><small>평가손익 기준</small></div></article>
+    </section>
+
+    <section class="trading-grid">
+      <article class="panel quotes-panel">
+        <header class="panel-head">
+          <div><small>VIRTUAL EXCHANGE</small><h2>가상 종목 시세</h2></div>
+          <button id="refresh" class="icon-button" type="button" title="새로고침" aria-label="시세 새로고침">↻</button>
+        </header>
+        <div class="table-scroll">
+          <table class="data-table quotes-table">
+            <thead><tr><th>종목</th><th>현재가</th><th>15초 등락</th><th>누적</th></tr></thead>
+            <tbody id="stock-list"><tr><td colspan="4" class="empty">시장 데이터를 불러오는 중입니다.</td></tr></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="panel chart-panel">
+        <header class="panel-head chart-head">
+          <div><small>LIVE PRICE</small><h2 id="chart-title">종목을 선택하세요</h2></div>
+          <div class="live-price"><strong id="live-price">-</strong><span id="live-change">-</span></div>
+        </header>
+        <div id="price-chart" class="price-chart" aria-label="선택 종목 가격 차트"></div>
+        <div class="chart-legend"><span><i class="line"></i>가격 흐름</span><span><i class="news"></i>뉴스 발생</span><small>최근 60개 변동</small></div>
+      </article>
+
+      <aside class="panel order-panel">
+        <header class="panel-head"><div><small>QUICK ORDER</small><h2>주문하기</h2></div></header>
+        <div class="selected-stock"><span>선택 종목</span><strong id="order-name">-</strong><small id="order-code">-</small><b id="order-price">-</b></div>
+        <form id="order-form">
+          <div class="side-toggle"><button type="button" class="active" data-side="buy">매수</button><button type="button" data-side="sell">매도</button></div>
+          <label class="field"><span>주문 수량</span><div class="input-suffix"><input id="quantity" type="number" value="1" min="1" max="1000000" required><b>주</b></div></label>
+          <div class="quick-quantity"><button type="button" data-quantity="1">1주</button><button type="button" data-quantity="10">10주</button><button type="button" data-quantity="100">100주</button><button type="button" data-quantity="max">최대</button></div>
+          <div class="estimate"><span>예상 주문금액</span><strong id="estimate">-</strong></div>
+          <button id="order-submit" class="primary-action buy" type="submit">매수 주문</button>
+        </form>
+        <p class="fine-print"><span>i</span> 서버의 체결 시점 가격으로 즉시 주문됩니다.</p>
+      </aside>
+    </section>
+
+    <section class="content-grid">
+      <article class="panel news-panel">
+        <header class="panel-head">
+          <div><small>BREAKING NEWS</small><h2>시장 뉴스</h2></div>
+          <span class="impact-badge">가격 영향 ±15~25%</span>
+        </header>
+        <div id="news-list" class="news-list"><div class="empty-block">아직 발행된 뉴스가 없습니다.</div></div>
+      </article>
+
+      <article class="panel operator-panel">
+        <header class="panel-head"><div><small>INSTRUCTOR CONTROL</small><h2>뉴스 이벤트 발행</h2></div><span class="operator-badge">운영자</span></header>
+        <form id="news-form">
+          <div class="form-grid three">
+            <label class="field"><span>영향 종목</span><select id="news-ticker"><option value="">전체 시장</option></select></label>
+            <label class="field"><span>뉴스 방향</span><select id="news-sentiment"><option value="positive">긍정 · 급등</option><option value="negative">부정 · 폭락</option></select></label>
+            <label class="field"><span>영향률 (%)</span><input id="news-impact" type="number" min="15" max="25" step="0.1" placeholder="랜덤"></label>
+          </div>
+          <label class="field"><span>뉴스 제목</span><input id="news-title" type="text" maxlength="120" placeholder="예: 글로벌 기업과 대규모 공급 계약 체결" required></label>
+          <label class="field"><span>뉴스 내용</span><textarea id="news-content" rows="3" maxlength="1000" placeholder="투자자가 판단할 수 있는 뉴스 내용을 입력하세요."></textarea></label>
+          <div class="operator-actions">
+            <label class="field admin-key"><span>운영자 키</span><input id="admin-key" type="password" maxlength="200" autocomplete="off" placeholder="서버 설정 시 입력"></label>
+            <button id="news-submit" class="news-action" type="submit"><span>⚡</span> 뉴스 발행 및 가격 반영</button>
+          </div>
+        </form>
+      </article>
+    </section>
+
+    <section class="content-grid portfolio-grid">
+      <article class="panel">
+        <header class="panel-head"><div><small>MY PORTFOLIO</small><h2>보유 종목</h2></div><button id="reset-account" class="text-button" type="button">계좌 초기화</button></header>
+        <div class="table-scroll"><table class="data-table"><thead><tr><th>종목</th><th>수량</th><th>평균단가</th><th>평가금액</th><th>수익률</th></tr></thead><tbody id="positions"></tbody></table></div>
+      </article>
+      <article class="panel">
+        <header class="panel-head"><div><small>ORDER HISTORY</small><h2>최근 거래</h2></div></header>
+        <div class="table-scroll"><table class="data-table"><thead><tr><th>시간</th><th>종목</th><th>구분</th><th>수량</th><th>체결가</th></tr></thead><tbody id="trades"></tbody></table></div>
+      </article>
+    </section>
+  </main>
+
+  <footer><strong>MARKET LAB</strong><span>교육용 가상 시장 · 실제 투자 및 실제 시세와 무관합니다.</span></footer>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
