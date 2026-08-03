@@ -10,6 +10,8 @@ const state = {
   data: null,
   countdownEnd: 0,
   refreshing: false,
+  randomNewsInitialized: false,
+  lastRandomNewsId: 0,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -78,6 +80,51 @@ function toast(message, type = 'success') {
   toast.timer = setTimeout(() => { element.hidden = true; }, 4300);
 }
 
+function hideRandomNewsPopup() {
+  const popup = $('#random-news-popup');
+  const backdrop = $('#random-news-backdrop');
+  popup.classList.remove('visible');
+  backdrop.classList.remove('visible');
+  clearTimeout(hideRandomNewsPopup.timer);
+  hideRandomNewsPopup.timer = setTimeout(() => {
+    popup.hidden = true;
+    backdrop.hidden = true;
+  }, 220);
+}
+
+function showRandomNewsPopup(item) {
+  const popup = $('#random-news-popup');
+  const backdrop = $('#random-news-backdrop');
+  clearTimeout(hideRandomNewsPopup.timer);
+  $('#random-news-title').textContent = item.title;
+  $('#random-news-content').textContent = item.content;
+  $('#random-news-content').hidden = !item.content;
+  backdrop.hidden = false;
+  popup.hidden = false;
+  requestAnimationFrame(() => {
+    backdrop.classList.add('visible');
+    popup.classList.add('visible');
+    $('#random-news-close').focus();
+  });
+}
+
+function detectRandomNews(news) {
+  const latest = news.find((item) => item.source === 'random');
+  if (!state.randomNewsInitialized) {
+    const stored = localStorage.getItem('market_lab_last_random_news_id');
+    state.lastRandomNewsId = stored === null ? (latest?.id || 0) : Number(stored || 0);
+    state.randomNewsInitialized = true;
+    if (stored === null) {
+      localStorage.setItem('market_lab_last_random_news_id', String(state.lastRandomNewsId));
+      return;
+    }
+  }
+  if (!latest || latest.id <= state.lastRandomNewsId) return;
+  state.lastRandomNewsId = latest.id;
+  localStorage.setItem('market_lab_last_random_news_id', String(latest.id));
+  showRandomNewsPopup(latest);
+}
+
 function renderSummary() {
   const portfolio = state.data.portfolio;
   $('#total-assets').textContent = won.format(portfolio.total_assets);
@@ -114,8 +161,11 @@ function renderChart() {
   const margin = { top: 16, right: 76, bottom: 30, left: 12 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
+  const position = state.data.portfolio.positions
+    .find((item) => item.ticker === stock.ticker);
   const prices = points.map((point) => Number(point.price));
-  const rawMin = Math.min(...prices), rawMax = Math.max(...prices);
+  const scalePrices = position ? [...prices, Number(position.avg_price)] : prices;
+  const rawMin = Math.min(...scalePrices), rawMax = Math.max(...scalePrices);
   const padding = Math.max((rawMax - rawMin) * .12, rawMax * .005, 10);
   const min = rawMin - padding, max = rawMax + padding;
   const x = (index) => margin.left + (points.length === 1 ? plotWidth / 2 : index / (points.length - 1) * plotWidth);
@@ -147,11 +197,62 @@ function renderChart() {
     <circle class="news-marker" cx="${x(index)}" cy="${y(point.price)}" r="5" />
     <text class="news-label" x="${x(index)}" y="${Math.max(10, y(point.price) - 9)}" text-anchor="middle">NEWS</text>` : '').join('');
 
+  const averagePriceLine = position ? (() => {
+    const lineY = y(Number(position.avg_price));
+    return `<line class="average-price-line" x1="${margin.left}" y1="${lineY}" x2="${margin.left + plotWidth}" y2="${lineY}" />`;
+  })() : '';
+
+  const hoverLayer = `<g id="chart-hover" class="chart-hover" visibility="hidden">
+      <line class="chart-hover-guide" y1="${margin.top}" y2="${margin.top + plotHeight}" />
+      <circle class="chart-hover-dot" r="4" />
+      <g id="chart-tooltip" class="chart-tooltip">
+        <rect width="138" height="42" rx="6" />
+        <text class="chart-tooltip-time" x="10" y="15"></text>
+        <text class="chart-tooltip-price" x="10" y="32"></text>
+      </g>
+    </g>
+    <rect id="chart-hover-capture" class="chart-hover-capture" x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" />`;
+
   host.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(stock.name)} 가격 흐름">
     <defs><linearGradient id="${gradientId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".8"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
     ${grid}<path class="chart-area" d="${area}" fill="url(#${gradientId})"/><path class="chart-line-path" d="${line}" stroke="${color}"/>
-    ${newsMarkers}${timeLabels}
+    ${newsMarkers}${averagePriceLine}${timeLabels}${hoverLayer}
   </svg>`;
+
+  const svg = host.querySelector('svg');
+  const capture = $('#chart-hover-capture');
+  const hover = $('#chart-hover');
+  const guide = hover.querySelector('.chart-hover-guide');
+  const dot = hover.querySelector('.chart-hover-dot');
+  const tooltip = $('#chart-tooltip');
+  const tooltipTime = hover.querySelector('.chart-tooltip-time');
+  const tooltipPrice = hover.querySelector('.chart-tooltip-price');
+
+  capture.addEventListener('pointermove', (event) => {
+    const bounds = svg.getBoundingClientRect();
+    const svgX = (event.clientX - bounds.left) / bounds.width * width;
+    const ratio = Math.max(0, Math.min(1, (svgX - margin.left) / plotWidth));
+    const index = points.length === 1 ? 0 : Math.round(ratio * (points.length - 1));
+    const [pointX, pointY] = coordinates[index];
+    const tooltipX = Math.max(margin.left, Math.min(margin.left + plotWidth - 138, pointX - 69));
+    const tooltipY = pointY < margin.top + 54 ? pointY + 10 : pointY - 50;
+    const pointTime = new Date(points[index].created_at).toLocaleTimeString('ko-KR', {
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    });
+
+    hover.setAttribute('visibility', 'visible');
+    guide.setAttribute('x1', pointX);
+    guide.setAttribute('x2', pointX);
+    dot.setAttribute('cx', pointX);
+    dot.setAttribute('cy', pointY);
+    tooltip.setAttribute('transform', `translate(${tooltipX} ${tooltipY})`);
+    tooltipTime.textContent = pointTime;
+    tooltipPrice.textContent = `${integer.format(points[index].price)}원`;
+  });
+
+  capture.addEventListener('pointerleave', () => {
+    hover.setAttribute('visibility', 'hidden');
+  });
 
   $('#chart-title').textContent = `${stock.name} (${stock.ticker})`;
   $('#live-price').textContent = `${integer.format(stock.price)}원`;
@@ -169,16 +270,41 @@ function renderOrder() {
 
 function renderNews() {
   const news = state.data.news;
-  $('#news-list').innerHTML = news.length ? news.map((item) => `
-    <article class="news-item ${item.sentiment}">
-      <div class="news-icon">${item.sentiment === 'positive' ? '↗' : '↘'}</div>
+  $('#news-list').innerHTML = news.length ? news.map((item) => {
+    const concealed = item.source === 'random' && !item.applied_at;
+    return `
+    <article class="news-item ${concealed ? 'neutral' : item.sentiment}">
+      <div class="news-icon">${concealed ? '◇' : item.sentiment === 'positive' ? '↗' : '↘'}</div>
       <div>
-        <div class="news-meta"><span>${escapeHtml(item.stock_name)}</span><time>${formatTime(item.published_at)}</time></div>
+        <div class="news-meta">
+          ${concealed ? '' : `<span>${escapeHtml(item.stock_name)}</span>`}<time>${formatTime(item.published_at)}</time>
+          <b class="news-status ${item.applied_at ? 'applied' : 'pending'}">${item.applied_at ? '가격 반영 완료' : `가격 반영 예정 · ${formatTime(item.effective_at)}`}</b>
+        </div>
         <h3>${escapeHtml(item.title)}</h3>
         ${item.content ? `<p>${escapeHtml(item.content)}</p>` : ''}
       </div>
-      <strong class="news-impact ${directionClass(item.impact_pct)}">${signedPercent(item.impact_pct)}</strong>
-    </article>`).join('') : '<div class="empty-block">아직 발행된 뉴스가 없습니다.</div>';
+      ${concealed
+        ? '<span class="news-undisclosed">시장 반응 대기</span>'
+        : `<strong class="news-impact ${directionClass(item.impact_pct)}">${signedPercent(item.impact_pct)}</strong>`}
+    </article>`;
+  }).join('') : '<div class="empty-block">아직 발행된 뉴스가 없습니다.</div>';
+  detectRandomNews(news);
+}
+
+function renderRecentNews() {
+  const recent = state.data.news.slice(0, 3);
+  $('#recent-news-list').innerHTML = recent.length ? recent.map((item) => {
+    const concealed = item.source === 'random' && !item.applied_at;
+    return `
+    <article class="recent-news-item">
+      <div class="recent-news-meta">
+        ${concealed ? '' : `<span>${escapeHtml(item.stock_name)}</span>`}
+        <time>${formatTime(item.published_at)}</time>
+      </div>
+      <h3>${escapeHtml(item.title)}</h3>
+      <b class="${item.applied_at ? 'applied' : 'pending'}">${item.applied_at ? '반영 완료' : '반영 예정'}</b>
+    </article>`;
+  }).join('') : '<div class="recent-news-empty">아직 발행된 뉴스가 없습니다.</div>';
 }
 
 function renderTables() {
@@ -211,6 +337,7 @@ function render() {
   renderChart();
   renderOrder();
   renderNews();
+  renderRecentNews();
   renderTables();
   renderStockOptions();
 }
@@ -248,6 +375,29 @@ function setSide(side) {
   const submit = $('#order-submit');
   submit.textContent = side === 'buy' ? '매수 주문' : '매도 주문';
   submit.className = `primary-action ${side}`;
+  $('#quick-order-label').textContent = side === 'buy'
+    ? '주문 가능 현금 기준 빠른 주문'
+    : '선택 종목 보유 수량 기준 빠른 주문';
+}
+
+function setMenuOpen(open) {
+  $('#app-menu').classList.toggle('open', open);
+  $('#menu-backdrop').classList.toggle('open', open);
+  $('#app-menu').setAttribute('aria-hidden', String(!open));
+  $('#menu-backdrop').setAttribute('aria-hidden', String(!open));
+  $('#menu-toggle').setAttribute('aria-expanded', String(open));
+}
+
+function setView(view, { updateHash = true } = {}) {
+  const activeView = view === 'news' ? 'news' : 'trading';
+  document.querySelectorAll('.app-view').forEach((element) => {
+    element.hidden = element.dataset.view !== activeView;
+  });
+  document.querySelectorAll('[data-view-target]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.viewTarget === activeView);
+  });
+  setMenuOpen(false);
+  if (updateHash && location.hash !== `#${activeView}`) location.hash = activeView;
 }
 
 $('#stock-list').addEventListener('click', (event) => {
@@ -267,14 +417,64 @@ document.querySelectorAll('.quick-quantity button').forEach((button) => {
   button.addEventListener('click', () => {
     const stock = currentStock();
     if (!stock) return;
-    let quantity = Number(button.dataset.quantity);
-    if (button.dataset.quantity === 'max') {
-      if (state.side === 'buy') quantity = Math.floor(state.data.portfolio.cash / stock.price);
-      else quantity = state.data.portfolio.positions.find((item) => item.ticker === stock.ticker)?.quantity || 0;
+    let quantity = Number(button.dataset.quantity || 0);
+    if (button.dataset.ratio) {
+      const ratio = Number(button.dataset.ratio);
+      if (state.side === 'buy') {
+        quantity = Math.floor((state.data.portfolio.cash * ratio) / stock.price);
+      } else {
+        const held = state.data.portfolio.positions
+          .find((item) => item.ticker === stock.ticker)?.quantity || 0;
+        quantity = Math.floor(held * ratio);
+      }
     }
-    $('#quantity').value = Math.max(1, quantity);
+    if (quantity < 1) {
+      toast(state.side === 'buy'
+        ? '해당 비율로 주문 가능한 현금이 부족합니다.'
+        : '해당 비율로 매도할 보유 수량이 없습니다.', 'error');
+      return;
+    }
+    $('#quantity').value = quantity;
     updateEstimate();
   });
+});
+
+$('#menu-toggle').addEventListener('click', (event) => {
+  event.stopPropagation();
+  setMenuOpen(!$('#app-menu').classList.contains('open'));
+});
+
+$('#menu-close').addEventListener('click', () => {
+  setMenuOpen(false);
+  $('#menu-toggle').focus();
+});
+
+$('#menu-backdrop').addEventListener('click', () => setMenuOpen(false));
+$('#random-news-close').addEventListener('click', hideRandomNewsPopup);
+$('#recent-news-more').addEventListener('click', () => setView('news'));
+
+document.querySelectorAll('[data-view-target]').forEach((button) => {
+  button.addEventListener('click', () => setView(button.dataset.viewTarget));
+});
+
+$('.brand').addEventListener('click', (event) => {
+  event.preventDefault();
+  setView('trading');
+});
+
+document.addEventListener('click', (event) => {
+  if (event.target.closest('.menu-wrap') || event.target.closest('.app-menu')) return;
+  setMenuOpen(false);
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  setMenuOpen(false);
+  $('#menu-toggle').focus();
+});
+
+window.addEventListener('hashchange', () => {
+  setView(location.hash === '#news' ? 'news' : 'trading', { updateHash: false });
 });
 
 $('#order-form').addEventListener('submit', async (event) => {
@@ -342,7 +542,6 @@ setInterval(() => {
   $('#topbar-time').textContent = now.toLocaleTimeString('ko-KR', { hour12: false });
   if (!state.countdownEnd) return;
   const remaining = Math.max(0, (state.countdownEnd - Date.now()) / 1000);
-  $('#countdown').textContent = `${Math.ceil(remaining)}초`;
   if (remaining <= 0 && !state.refreshing) {
     state.countdownEnd = Date.now() + 15_000;
     refresh({ silent: true });
@@ -350,4 +549,5 @@ setInterval(() => {
 }, 250);
 
 $('#header-user').textContent = state.userId.toUpperCase();
+setView(location.hash === '#news' ? 'news' : 'trading', { updateHash: false });
 refresh();

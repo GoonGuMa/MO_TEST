@@ -9,6 +9,13 @@ import httpx
 import pytest
 
 from app.main import create_app
+from app.market import (
+    BASE_CHANGE_MAX,
+    RANDOM_NEWS_CHANGE_MAX,
+    RANDOM_NEWS_CHANGE_MIN,
+    RANDOM_NEWS_INTERVAL_MAX,
+    RANDOM_NEWS_INTERVAL_MIN,
+)
 
 
 @pytest.fixture()
@@ -50,6 +57,7 @@ def test_snapshot_creates_account_and_six_stocks(market_app):
 
 
 def test_normal_tick_moves_every_stock_within_configured_range(market_app):
+    assert BASE_CHANGE_MAX == 0.07
     app, database = market_app
     before = snapshot(app)
     with sqlite3.connect(database) as conn:
@@ -62,11 +70,11 @@ def test_normal_tick_moves_every_stock_within_configured_range(market_app):
     for previous in before["stocks"]:
         current = stock(after, previous["ticker"])
         change = abs((current["price"] / previous["price"] - 1) * 100)
-        assert 0.09 <= change <= 1.01
+        assert 0.09 <= change <= 7.01
 
 
 def test_positive_news_applies_twenty_percent_to_selected_stock(market_app):
-    app, _ = market_app
+    app, database = market_app
     old_price = stock(snapshot(app))["price"]
     response = request(app, "POST", "/api/market/news", json={
         "title": "대규모 수주 계약", "content": "예상치를 크게 웃도는 계약입니다.",
@@ -75,10 +83,69 @@ def test_positive_news_applies_twenty_percent_to_selected_stock(market_app):
     })
     assert response.status_code == 200
     assert response.json()["affected_tickers"] == ["005930"]
+    with sqlite3.connect(database) as conn:
+        published_at, effective_at = conn.execute(
+            "SELECT published_at, effective_at FROM news WHERE id = ?",
+            (response.json()["news_id"],),
+        ).fetchone()
+    assert effective_at - published_at == 60
+    pending = snapshot(app)
+    assert stock(pending)["price"] == old_price
+    assert pending["news"][0]["applied_at"] is None
+    assert pending["history"][-1]["event_type"] != "news"
+
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE news SET effective_at = ? WHERE id = ?",
+            (time.time() - 0.1, response.json()["news_id"]),
+        )
+        conn.commit()
     after = snapshot(app)
     assert stock(after)["price"] == round(old_price * 1.2 / 10) * 10
     assert after["news"][0]["impact_pct"] == 20
+    assert after["news"][0]["source"] == "manual"
+    assert after["news"][0]["applied_at"] is not None
     assert after["history"][-1]["event_type"] == "news"
+    assert stock(snapshot(app))["price"] == stock(after)["price"]
+
+
+def test_random_news_uses_its_own_schedule_and_impact_range(market_app):
+    app, database = market_app
+    before = snapshot(app)
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'next_random_news_at'",
+            (str(time.time() - 1),),
+        )
+        conn.commit()
+
+    pending = snapshot(app)
+    event = pending["news"][0]
+    assert event["source"] == "random"
+    assert RANDOM_NEWS_CHANGE_MIN <= abs(event["impact_pct"]) <= RANDOM_NEWS_CHANGE_MAX
+    assert stock(pending, event["ticker"])["price"] == stock(before, event["ticker"])["price"]
+    assert event["applied_at"] is None
+
+    with sqlite3.connect(database) as conn:
+        published_at, effective_at = conn.execute(
+            "SELECT published_at, effective_at FROM news WHERE id = ?", (event["id"],)
+        ).fetchone()
+        next_random_news_at = float(conn.execute(
+            "SELECT value FROM market_meta WHERE key = 'next_random_news_at'"
+        ).fetchone()[0])
+        conn.execute(
+            "UPDATE news SET effective_at = ? WHERE id = ?",
+            (time.time() - 0.1, event["id"]),
+        )
+        conn.commit()
+    assert effective_at - published_at == 60
+    assert RANDOM_NEWS_INTERVAL_MIN <= next_random_news_at - published_at <= RANDOM_NEWS_INTERVAL_MAX
+
+    applied = snapshot(app, ticker=event["ticker"])
+    old_price = stock(before, event["ticker"])["price"]
+    expected = round(old_price * (1 + event["impact_pct"] / 100) / 10) * 10
+    assert stock(applied, event["ticker"])["price"] == expected
+    assert applied["news"][0]["applied_at"] is not None
 
 
 def test_negative_news_can_affect_entire_market(market_app):
