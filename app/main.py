@@ -4,23 +4,28 @@ import os
 import secrets
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .market import MarketEngine, MarketError
+from .market import MarketEngine, MarketError, SESSION_MAX_AGE_SECONDS
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 STATIC_DIR = ROOT_DIR / "app" / "static"
+SESSION_COOKIE = "market_lab_session"
 
 
 class OrderRequest(BaseModel):
-    user_id: str = Field(min_length=3, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     ticker: str = Field(pattern=r"^\d{6}$")
     side: str = Field(pattern="^(buy|sell)$")
     quantity: int = Field(ge=1, le=1_000_000)
+
+
+class AuthRequest(BaseModel):
+    username: str = Field(min_length=2, max_length=20)
+    password: str = Field(min_length=4, max_length=64)
 
 
 class NewsRequest(BaseModel):
@@ -30,10 +35,6 @@ class NewsRequest(BaseModel):
     ticker: str | None = Field(default=None, pattern=r"^\d{6}$")
     impact_pct: float | None = Field(default=None, ge=15.0, le=25.0)
     admin_key: str = Field(default="", max_length=200)
-
-
-class ResetRequest(BaseModel):
-    user_id: str = Field(min_length=3, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 def create_app(db_path: Path | None = None) -> FastAPI:
@@ -54,14 +55,56 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     async def health() -> dict:
         return {"status": "ok"}
 
+    def session_user(request: Request) -> dict | None:
+        return engine.user_for_session(request.cookies.get(SESSION_COOKIE))
+
+    async def current_user(request: Request) -> dict:
+        user = session_user(request)
+        if not user:
+            raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+        return user
+
+    def set_session_cookie(request: Request, response: Response, token: str) -> None:
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+        response.set_cookie(
+            SESSION_COOKIE, token, max_age=SESSION_MAX_AGE_SECONDS,
+            httponly=True, samesite="lax",
+            secure=request.url.scheme == "https" or forwarded_proto == "https",
+            path="/",
+        )
+
+    @app.get("/api/auth/me")
+    async def auth_me(request: Request) -> dict:
+        return {"user": session_user(request)}
+
+    @app.post("/api/auth/register", status_code=201)
+    async def auth_register(payload: AuthRequest, request: Request, response: Response) -> dict:
+        user, token = engine.register_user(payload.username, payload.password)
+        set_session_cookie(request, response, token)
+        return {"message": "회원가입이 완료되었습니다.", "user": user}
+
+    @app.post("/api/auth/login")
+    async def auth_login(payload: AuthRequest, request: Request, response: Response) -> dict:
+        user, token = engine.login_user(payload.username, payload.password)
+        set_session_cookie(request, response, token)
+        return {"message": "로그인했습니다.", "user": user}
+
+    @app.post("/api/auth/logout")
+    async def auth_logout(request: Request, response: Response) -> dict:
+        engine.logout_user(request.cookies.get(SESSION_COOKIE))
+        response.delete_cookie(SESSION_COOKIE, path="/")
+        return {"message": "로그아웃했습니다."}
+
     @app.get("/api/market/snapshot")
-    async def snapshot(user_id: str = "guest", ticker: str = "005930") -> dict:
+    async def snapshot(request: Request, ticker: str = "005930") -> dict:
+        user = session_user(request)
+        user_id = engine.account_id_for_user(user["id"]) if user else "guest_preview"
         return engine.snapshot(user_id=user_id, ticker=ticker)
 
     @app.post("/api/market/orders")
-    async def order(request: OrderRequest) -> dict:
+    async def order(request: OrderRequest, user: dict = Depends(current_user)) -> dict:
         return engine.order(
-            user_id=request.user_id,
+            user_id=engine.account_id_for_user(user["id"]),
             ticker=request.ticker,
             side=request.side,
             quantity=request.quantity,
@@ -81,8 +124,8 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         )
 
     @app.post("/api/market/accounts/reset")
-    async def reset(request: ResetRequest) -> dict:
-        return engine.reset_account(request.user_id)
+    async def reset(user: dict = Depends(current_user)) -> dict:
+        return engine.reset_account(engine.account_id_for_user(user["id"]))
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

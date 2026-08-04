@@ -4,7 +4,8 @@ const won = new Intl.NumberFormat('ko-KR', {
 const integer = new Intl.NumberFormat('ko-KR');
 
 const state = {
-  userId: getUserId(),
+  user: null,
+  authMode: 'login',
   ticker: '005930',
   side: 'buy',
   data: null,
@@ -15,17 +16,6 @@ const state = {
 };
 
 const $ = (selector) => document.querySelector(selector);
-
-function getUserId() {
-  let userId = localStorage.getItem('market_lab_user_id');
-  if (!userId) {
-    const suffix = crypto.randomUUID?.().replaceAll('-', '').slice(0, 10)
-      || Math.random().toString(36).slice(2, 12);
-    userId = `student_${suffix}`;
-    localStorage.setItem('market_lab_user_id', userId);
-  }
-  return userId;
-}
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -64,10 +54,15 @@ function apiErrorMessage(data, fallback) {
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
     ...options,
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(apiErrorMessage(data, `요청 실패 (${response.status})`));
+  if (!response.ok) {
+    const error = new Error(apiErrorMessage(data, `요청 실패 (${response.status})`));
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -78,6 +73,72 @@ function toast(message, type = 'success') {
   element.hidden = false;
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => { element.hidden = true; }, 4300);
+}
+
+function setAuthMode(mode) {
+  const registering = mode === 'register';
+  state.authMode = registering ? 'register' : 'login';
+  $('#auth-title').textContent = registering ? '회원가입' : '로그인';
+  $('#auth-description').textContent = registering
+    ? '아이디별로 계좌와 거래 내역이 저장됩니다.'
+    : '내 계좌와 거래 내역을 불러옵니다.';
+  $('#auth-submit').textContent = registering ? '회원가입' : '로그인';
+  $('#auth-switch-copy').textContent = registering ? '이미 계정이 있으신가요?' : '계정이 없으신가요?';
+  $('#auth-switch').textContent = registering ? '로그인' : '회원가입';
+  $('#auth-confirm-field').hidden = !registering;
+  $('#auth-password-confirm').required = registering;
+  $('#auth-password').autocomplete = registering ? 'new-password' : 'current-password';
+  $('#auth-error').hidden = true;
+}
+
+function showAuthModal(mode = 'login') {
+  const modal = $('#auth-modal');
+  const backdrop = $('#auth-backdrop');
+  clearTimeout(hideAuthModal.timer);
+  setAuthMode(mode);
+  $('#auth-password').value = '';
+  $('#auth-password-confirm').value = '';
+  backdrop.hidden = false;
+  modal.hidden = false;
+  requestAnimationFrame(() => {
+    backdrop.classList.add('visible');
+    modal.classList.add('visible');
+    $('#auth-username').focus();
+  });
+}
+
+function hideAuthModal() {
+  const modal = $('#auth-modal');
+  const backdrop = $('#auth-backdrop');
+  modal.classList.remove('visible');
+  backdrop.classList.remove('visible');
+  clearTimeout(hideAuthModal.timer);
+  hideAuthModal.timer = setTimeout(() => {
+    modal.hidden = true;
+    backdrop.hidden = true;
+  }, 200);
+}
+
+function renderAuth() {
+  const authenticated = Boolean(state.user);
+  $('#auth-actions').hidden = authenticated;
+  $('#member-actions').hidden = !authenticated;
+  if (authenticated) {
+    $('#header-user').textContent = state.user.username;
+    $('#header-avatar').textContent = state.user.username.slice(0, 1).toUpperCase();
+  }
+  setSide(state.side);
+}
+
+async function initializeAuth() {
+  try {
+    const result = await api('/api/auth/me');
+    state.user = result.user;
+  } catch (error) {
+    state.user = null;
+  }
+  renderAuth();
+  await refresh();
 }
 
 function hideNewsPopup() {
@@ -367,7 +428,7 @@ async function refresh({ silent = false } = {}) {
   state.refreshing = true;
   $('#refresh').classList.add('spinning');
   try {
-    const query = new URLSearchParams({ user_id: state.userId, ticker: state.ticker });
+    const query = new URLSearchParams({ ticker: state.ticker });
     state.data = await api(`/api/market/snapshot?${query}`);
     state.ticker = state.data.selected_ticker;
     state.countdownEnd = Date.now() + state.data.next_tick_in_seconds * 1000;
@@ -393,7 +454,7 @@ function setSide(side) {
     button.classList.toggle('active', button.dataset.side === side);
   });
   const submit = $('#order-submit');
-  submit.textContent = side === 'buy' ? '매수 주문' : '매도 주문';
+  submit.textContent = state.user ? (side === 'buy' ? '매수 주문' : '매도 주문') : '로그인 후 주문';
   submit.className = `primary-action ${side}`;
   $('#quick-order-label').textContent = side === 'buy'
     ? '주문 가능 현금 기준 빠른 주문'
@@ -470,6 +531,15 @@ $('#menu-close').addEventListener('click', () => {
 });
 
 $('#menu-backdrop').addEventListener('click', () => setMenuOpen(false));
+$('#login-open').addEventListener('click', () => showAuthModal('login'));
+$('#register-open').addEventListener('click', () => showAuthModal('register'));
+$('#auth-close').addEventListener('click', hideAuthModal);
+$('#auth-backdrop').addEventListener('click', hideAuthModal);
+$('#auth-switch').addEventListener('click', () => {
+  setAuthMode(state.authMode === 'login' ? 'register' : 'login');
+  $('#auth-password').value = '';
+  $('#auth-password-confirm').value = '';
+});
 $('#random-news-close').addEventListener('click', hideNewsPopup);
 $('#random-news-backdrop').addEventListener('click', hideNewsPopup);
 $('#recent-news-list').addEventListener('click', openSelectedNews);
@@ -494,6 +564,7 @@ document.addEventListener('click', (event) => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
+  if (!$('#auth-modal').hidden) hideAuthModal();
   if (!$('#random-news-popup').hidden) hideNewsPopup();
   setMenuOpen(false);
   $('#menu-toggle').focus();
@@ -505,19 +576,28 @@ window.addEventListener('hashchange', () => {
 
 $('#order-form').addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (!state.user) {
+    showAuthModal('login');
+    return;
+  }
   const submit = $('#order-submit');
   submit.disabled = true;
   try {
     const result = await api('/api/market/orders', {
       method: 'POST',
       body: JSON.stringify({
-        user_id: state.userId, ticker: state.ticker,
-        side: state.side, quantity: Number($('#quantity').value),
+        ticker: state.ticker, side: state.side,
+        quantity: Number($('#quantity').value),
       }),
     });
     toast(`${result.message} · ${won.format(result.total)}`);
     await refresh();
   } catch (error) {
+    if (error.status === 401) {
+      state.user = null;
+      renderAuth();
+      showAuthModal('login');
+    }
     toast(error.message, 'error');
   } finally {
     submit.disabled = false;
@@ -551,11 +631,56 @@ $('#news-form').addEventListener('submit', async (event) => {
 });
 
 $('#reset-account').addEventListener('click', async () => {
+  if (!state.user) {
+    showAuthModal('login');
+    return;
+  }
   if (!confirm('보유 종목과 거래 내역을 지우고 초기자금 1억원으로 되돌릴까요?')) return;
   try {
-    const result = await api('/api/market/accounts/reset', {
-      method: 'POST', body: JSON.stringify({ user_id: state.userId }),
+    const result = await api('/api/market/accounts/reset', { method: 'POST' });
+    toast(result.message);
+    await refresh();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+});
+
+$('#auth-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const submit = $('#auth-submit');
+  const errorElement = $('#auth-error');
+  const password = $('#auth-password').value;
+  if (state.authMode === 'register' && password !== $('#auth-password-confirm').value) {
+    errorElement.textContent = '비밀번호 확인이 일치하지 않습니다.';
+    errorElement.hidden = false;
+    return;
+  }
+  submit.disabled = true;
+  errorElement.hidden = true;
+  try {
+    const result = await api(`/api/auth/${state.authMode}`, {
+      method: 'POST',
+      body: JSON.stringify({ username: $('#auth-username').value, password }),
     });
+    state.user = result.user;
+    renderAuth();
+    hideAuthModal();
+    $('#auth-form').reset();
+    toast(result.message);
+    await refresh();
+  } catch (error) {
+    errorElement.textContent = error.message;
+    errorElement.hidden = false;
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+$('#logout').addEventListener('click', async () => {
+  try {
+    const result = await api('/api/auth/logout', { method: 'POST' });
+    state.user = null;
+    renderAuth();
     toast(result.message);
     await refresh();
   } catch (error) {
@@ -574,6 +699,5 @@ setInterval(() => {
   }
 }, 250);
 
-$('#header-user').textContent = state.userId.toUpperCase();
 setView(location.hash === '#news' ? 'news' : 'trading', { updateHash: false });
-refresh();
+initializeAuth();

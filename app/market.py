@@ -1,10 +1,15 @@
 """SQLite-backed, news-driven educational stock market engine."""
 from __future__ import annotations
 
+import hashlib
+import hmac
 import random
+import re
+import secrets
 import sqlite3
 import threading
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,6 +27,9 @@ RANDOM_NEWS_CHANGE_MIN = 7.0
 RANDOM_NEWS_CHANGE_MAX = 10.0
 INITIAL_CASH = 100_000_000
 MAX_CATCHUP_TICKS = 240
+PASSWORD_HASH_ITERATIONS = 210_000
+SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+USERNAME_PATTERN = re.compile(r"^[0-9A-Za-z가-힣_-]+$")
 
 STOCKS = (
     ("005930", "삼성전자", "반도체", 84_000),
@@ -182,6 +190,23 @@ class MarketEngine:
                         FOREIGN KEY (user_id) REFERENCES accounts(user_id) ON DELETE CASCADE
                     );
                     CREATE INDEX IF NOT EXISTS idx_trades_user_id ON trades(user_id, id DESC);
+                    CREATE TABLE IF NOT EXISTS users (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        username TEXT NOT NULL,
+                        username_key TEXT NOT NULL UNIQUE,
+                        password_salt BLOB NOT NULL,
+                        password_hash BLOB NOT NULL,
+                        created_at REAL NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS sessions (
+                        token_hash TEXT PRIMARY KEY,
+                        user_id INTEGER NOT NULL,
+                        created_at REAL NOT NULL,
+                        expires_at REAL NOT NULL,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_sessions_user_id
+                        ON sessions(user_id);
                     """
                 )
                 news_columns = {
@@ -424,6 +449,117 @@ class MarketEngine:
     def _validate_user_id(user_id: str) -> None:
         if not (3 <= len(user_id) <= 80) or not all(c.isalnum() or c in "_-" for c in user_id):
             raise MarketError(422, "올바르지 않은 사용자 ID입니다.")
+
+    @staticmethod
+    def _normalize_username(username: str) -> tuple[str, str]:
+        display = unicodedata.normalize("NFKC", username).strip()
+        if not 2 <= len(display) <= 20 or not USERNAME_PATTERN.fullmatch(display):
+            raise MarketError(422, "아이디는 한글, 영문, 숫자, _, - 조합으로 2~20자여야 합니다.")
+        return display, display.casefold()
+
+    @staticmethod
+    def _password_hash(password: str, salt: bytes) -> bytes:
+        return hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt, PASSWORD_HASH_ITERATIONS
+        )
+
+    @staticmethod
+    def _validate_password(password: str) -> None:
+        if not 4 <= len(password) <= 64:
+            raise MarketError(422, "비밀번호는 4~64자로 입력하세요.")
+
+    @staticmethod
+    def account_id_for_user(user_id: int) -> str:
+        return f"member_{user_id}"
+
+    @staticmethod
+    def _session_token_hash(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _public_user(row: sqlite3.Row) -> dict:
+        return {"id": int(row["id"]), "username": row["username"]}
+
+    def _create_session(self, conn: sqlite3.Connection, user_id: int, now: float) -> str:
+        token = secrets.token_urlsafe(32)
+        conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
+        conn.execute(
+            """INSERT INTO sessions(token_hash, user_id, created_at, expires_at)
+               VALUES (?, ?, ?, ?)""",
+            (
+                self._session_token_hash(token), user_id, now,
+                now + SESSION_MAX_AGE_SECONDS,
+            ),
+        )
+        return token
+
+    def register_user(self, username: str, password: str) -> tuple[dict, str]:
+        display, username_key = self._normalize_username(username)
+        self._validate_password(password)
+        now = time.time()
+        salt = secrets.token_bytes(16)
+        password_hash = self._password_hash(password, salt)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = conn.execute(
+                    """INSERT INTO users
+                       (username, username_key, password_salt, password_hash, created_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (display, username_key, salt, password_hash, now),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise MarketError(409, "이미 사용 중인 아이디입니다.") from exc
+            user_id = int(cursor.lastrowid)
+            self._ensure_account(conn, self.account_id_for_user(user_id), now)
+            token = self._create_session(conn, user_id, now)
+            row = conn.execute(
+                "SELECT id, username FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            conn.commit()
+        return self._public_user(row), token
+
+    def login_user(self, username: str, password: str) -> tuple[dict, str]:
+        _, username_key = self._normalize_username(username)
+        self._validate_password(password)
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """SELECT id, username, password_salt, password_hash
+                   FROM users WHERE username_key = ?""",
+                (username_key,),
+            ).fetchone()
+            if not row:
+                raise MarketError(401, "아이디 또는 비밀번호가 올바르지 않습니다.")
+            candidate = self._password_hash(password, bytes(row["password_salt"]))
+            if not hmac.compare_digest(candidate, bytes(row["password_hash"])):
+                raise MarketError(401, "아이디 또는 비밀번호가 올바르지 않습니다.")
+            token = self._create_session(conn, int(row["id"]), now)
+            conn.commit()
+        return self._public_user(row), token
+
+    def user_for_session(self, token: str | None) -> dict | None:
+        if not token:
+            return None
+        now = time.time()
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT u.id, u.username FROM sessions s
+                   JOIN users u ON u.id = s.user_id
+                   WHERE s.token_hash = ? AND s.expires_at > ?""",
+                (self._session_token_hash(token), now),
+            ).fetchone()
+        return self._public_user(row) if row else None
+
+    def logout_user(self, token: str | None) -> None:
+        if not token:
+            return
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM sessions WHERE token_hash = ?",
+                (self._session_token_hash(token),),
+            )
 
     def snapshot(self, user_id: str, ticker: str = "005930") -> dict:
         self._validate_user_id(user_id)

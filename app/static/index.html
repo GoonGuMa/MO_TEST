@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="뉴스 이벤트로 움직이는 교육용 모의투자">
   <title>MARKET LAB — 뉴스 기반 모의투자</title>
-  <link rel="stylesheet" href="/styles.css?v=12">
+  <link rel="stylesheet" href="/styles.css?v=13">
 </head>
 <body>
   <header class="topbar">
@@ -46,11 +46,36 @@
       <span>가상 시장 운영 중</span>
       <b id="topbar-time">--:--:--</b>
     </div>
-    <div class="topbar-user"><span id="header-user">STUDENT</span><div class="avatar">S</div></div>
+    <div class="topbar-user">
+      <div id="auth-actions" class="auth-actions">
+        <button id="login-open" type="button">로그인</button>
+        <button id="register-open" class="signup" type="button">회원가입</button>
+      </div>
+      <div id="member-actions" class="member-actions" hidden>
+        <div id="header-avatar" class="avatar">S</div>
+        <span id="header-user"></span>
+        <button id="logout" type="button">로그아웃</button>
+      </div>
+    </div>
   </header>
 
   <main class="shell">
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <div id="auth-backdrop" class="auth-backdrop" aria-hidden="true" hidden></div>
+    <section id="auth-modal" class="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title" hidden>
+      <button id="auth-close" class="auth-close" type="button" aria-label="회원 창 닫기">×</button>
+      <small>MARKET MEMBER</small>
+      <h2 id="auth-title">로그인</h2>
+      <p id="auth-description">내 계좌와 거래 내역을 불러옵니다.</p>
+      <form id="auth-form">
+        <label class="field"><span>아이디</span><input id="auth-username" type="text" minlength="2" maxlength="20" autocomplete="username" placeholder="한글·영문·숫자 2~20자" required></label>
+        <label class="field"><span>비밀번호</span><input id="auth-password" type="password" minlength="4" maxlength="64" autocomplete="current-password" placeholder="4자 이상" required></label>
+        <label id="auth-confirm-field" class="field" hidden><span>비밀번호 확인</span><input id="auth-password-confirm" type="password" minlength="4" maxlength="64" autocomplete="new-password" placeholder="비밀번호를 다시 입력" required></label>
+        <p id="auth-error" class="auth-error" role="alert" hidden></p>
+        <button id="auth-submit" class="auth-submit" type="submit">로그인</button>
+      </form>
+      <p class="auth-switch"><span id="auth-switch-copy">계정이 없으신가요?</span><button id="auth-switch" type="button">회원가입</button></p>
+    </section>
     <div id="random-news-backdrop" class="random-news-backdrop" aria-hidden="true" hidden></div>
     <aside id="random-news-popup" class="random-news-popup" role="dialog" aria-modal="true" aria-labelledby="random-news-title" hidden>
       <button id="random-news-close" type="button" aria-label="뉴스 팝업 닫기">×</button>
@@ -185,6 +210,6 @@
   </main>
 
   <footer><strong>MARKET LAB</strong><span>교육용 가상 시장 · 실제 투자 및 실제 시세와 무관합니다.</span></footer>
-  <script type="module" src="/app.js?v=12"></script>
+  <script type="module" src="/app.js?v=13"></script>
 </body>
 </html>

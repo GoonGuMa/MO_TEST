@@ -34,13 +34,21 @@ def request(app, method, path, **kwargs):
     return asyncio.run(send())
 
 
-def snapshot(app, user_id="student_test", ticker="005930"):
+def snapshot(app, ticker="005930", cookies=None):
     response = request(
         app, "GET", "/api/market/snapshot",
-        params={"user_id": user_id, "ticker": ticker},
+        params={"ticker": ticker}, cookies=cookies,
     )
     assert response.status_code == 200
     return response.json()
+
+
+def register(app, username="student_test", password="pass1234"):
+    response = request(app, "POST", "/api/auth/register", json={
+        "username": username, "password": password,
+    })
+    assert response.status_code == 201
+    return dict(response.cookies), response.json()["user"]
 
 
 def stock(data, ticker="005930"):
@@ -161,21 +169,22 @@ def test_negative_news_can_affect_entire_market(market_app):
 
 def test_buy_and_sell_update_cash_and_position(market_app):
     app, _ = market_app
-    price = stock(snapshot(app))["price"]
+    cookies, _ = register(app)
+    price = stock(snapshot(app, cookies=cookies))["price"]
     buy = request(app, "POST", "/api/market/orders", json={
-        "user_id": "student_test", "ticker": "005930", "side": "buy", "quantity": 10,
-    })
+        "ticker": "005930", "side": "buy", "quantity": 10,
+    }, cookies=cookies)
     assert buy.status_code == 200
     assert buy.json()["portfolio"]["cash"] == 100_000_000 - price * 10
     assert buy.json()["portfolio"]["positions"][0]["quantity"] == 10
     sell = request(app, "POST", "/api/market/orders", json={
-        "user_id": "student_test", "ticker": "005930", "side": "sell", "quantity": 4,
-    })
+        "ticker": "005930", "side": "sell", "quantity": 4,
+    }, cookies=cookies)
     assert sell.status_code == 200
     assert sell.json()["portfolio"]["positions"][0]["quantity"] == 6
     rejected = request(app, "POST", "/api/market/orders", json={
-        "user_id": "student_test", "ticker": "005930", "side": "sell", "quantity": 7,
-    })
+        "ticker": "005930", "side": "sell", "quantity": 7,
+    }, cookies=cookies)
     assert rejected.status_code == 400
     assert "보유 수량" in rejected.json()["detail"]
 
@@ -194,13 +203,80 @@ def test_news_admin_key_is_enforced(market_app, monkeypatch):
 
 def test_account_reset_restores_initial_cash(market_app):
     app, _ = market_app
-    snapshot(app)
+    cookies, _ = register(app)
     request(app, "POST", "/api/market/orders", json={
-        "user_id": "student_test", "ticker": "005930", "side": "buy", "quantity": 3,
-    })
-    response = request(
-        app, "POST", "/api/market/accounts/reset", json={"user_id": "student_test"}
-    )
+        "ticker": "005930", "side": "buy", "quantity": 3,
+    }, cookies=cookies)
+    response = request(app, "POST", "/api/market/accounts/reset", cookies=cookies)
     assert response.status_code == 200
     assert response.json()["portfolio"]["cash"] == 100_000_000
     assert response.json()["portfolio"]["positions"] == []
+
+
+def test_auth_register_login_logout_and_duplicate_username(market_app):
+    app, database = market_app
+    cookies, user = register(app, username="오준영", password="class1234")
+    assert user["username"] == "오준영"
+
+    me = request(app, "GET", "/api/auth/me", cookies=cookies)
+    assert me.status_code == 200
+    assert me.json()["user"] == user
+
+    duplicate = request(app, "POST", "/api/auth/register", json={
+        "username": "오준영", "password": "other1234",
+    })
+    assert duplicate.status_code == 409
+    wrong = request(app, "POST", "/api/auth/login", json={
+        "username": "오준영", "password": "wrong1234",
+    })
+    assert wrong.status_code == 401
+
+    logout = request(app, "POST", "/api/auth/logout", cookies=cookies)
+    assert logout.status_code == 200
+    assert request(app, "GET", "/api/auth/me", cookies=cookies).json()["user"] is None
+    login = request(app, "POST", "/api/auth/login", json={
+        "username": "오준영", "password": "class1234",
+    })
+    assert login.status_code == 200
+
+    with sqlite3.connect(database) as conn:
+        stored_hash = conn.execute(
+            "SELECT password_hash FROM users WHERE username = ?", ("오준영",)
+        ).fetchone()[0]
+    assert stored_hash != b"class1234"
+
+
+def test_orders_require_login_and_accounts_are_isolated(market_app):
+    app, _ = market_app
+    order_payload = {"ticker": "005930", "side": "buy", "quantity": 2}
+    assert request(app, "POST", "/api/market/orders", json=order_payload).status_code == 401
+
+    first_cookies, _ = register(app, username="student_one")
+    second_cookies, _ = register(app, username="student_two")
+    price = stock(snapshot(app, cookies=first_cookies))["price"]
+    assert request(
+        app, "POST", "/api/market/orders", json=order_payload, cookies=first_cookies
+    ).status_code == 200
+
+    first = snapshot(app, cookies=first_cookies)["portfolio"]
+    second = snapshot(app, cookies=second_cookies)["portfolio"]
+    assert first["cash"] == 100_000_000 - price * 2
+    assert first["positions"][0]["quantity"] == 2
+    assert second["cash"] == 100_000_000
+    assert second["positions"] == []
+
+
+def test_account_data_survives_app_restart(market_app):
+    app, database = market_app
+    cookies, _ = register(app, username="restart_student", password="pass1234")
+    response = request(app, "POST", "/api/market/orders", json={
+        "ticker": "035420", "side": "buy", "quantity": 5,
+    }, cookies=cookies)
+    assert response.status_code == 200
+
+    restarted_app = create_app(database)
+    me = request(restarted_app, "GET", "/api/auth/me", cookies=cookies)
+    assert me.json()["user"]["username"] == "restart_student"
+    restarted = snapshot(restarted_app, cookies=cookies)["portfolio"]
+    assert restarted["positions"][0]["ticker"] == "035420"
+    assert restarted["positions"][0]["quantity"] == 5
