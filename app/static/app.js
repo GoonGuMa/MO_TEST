@@ -157,7 +157,9 @@ function showNewsPopup(item) {
   const popup = $('#random-news-popup');
   const backdrop = $('#random-news-backdrop');
   clearTimeout(hideNewsPopup.timer);
-  $('#random-news-stock').textContent = item.stock_name || '전체 시장';
+  $('#random-news-stock').textContent = item.applied_at
+    ? (item.stock_name || '전체 시장')
+    : '영향 종목 비공개';
   $('#random-news-time').textContent = formatTime(item.published_at);
   const status = $('#random-news-status');
   status.textContent = item.applied_at ? '가격 반영 완료' : '가격 반영 예정';
@@ -358,7 +360,7 @@ function renderNews() {
       <div class="news-icon">${concealed ? '◇' : item.sentiment === 'positive' ? '↗' : '↘'}</div>
       <div>
         <div class="news-meta">
-          ${concealed ? '' : `<span>${escapeHtml(item.stock_name)}</span>`}<time>${formatTime(item.published_at)}</time>
+          ${item.applied_at ? `<span>${escapeHtml(item.stock_name)}</span>` : ''}<time>${formatTime(item.published_at)}</time>
           <b class="news-status ${item.applied_at ? 'applied' : 'pending'}">${item.applied_at ? '가격 반영 완료' : `가격 반영 예정 · ${formatTime(item.effective_at)}`}</b>
         </div>
         <h3>${escapeHtml(item.title)}</h3>
@@ -375,11 +377,10 @@ function renderNews() {
 function renderRecentNews() {
   const recent = state.data.news.slice(0, 3);
   $('#recent-news-list').innerHTML = recent.length ? recent.map((item) => {
-    const concealed = item.source === 'random' && !item.applied_at;
     return `
     <article class="recent-news-item" data-news-id="${item.id}" role="button" tabindex="0" aria-haspopup="dialog">
       <div class="recent-news-meta">
-        ${concealed ? '' : `<span>${escapeHtml(item.stock_name)}</span>`}
+        ${item.applied_at ? `<span>${escapeHtml(item.stock_name)}</span>` : ''}
         <time>${formatTime(item.published_at)}</time>
       </div>
       <h3>${escapeHtml(item.title)}</h3>
