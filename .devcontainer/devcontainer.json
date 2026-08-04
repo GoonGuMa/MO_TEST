@@ -1,0 +1,13 @@
+{
+  "name": "MO_TEST",
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.12-bookworm",
+  "forwardPorts": [8000],
+  "portsAttributes": {
+    "8000": {
+      "label": "MO_TEST 웹 앱",
+      "onAutoForward": "openPreview"
+    }
+  },
+  "postCreateCommand": "python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt",
+  "postStartCommand": "bash .devcontainer/start-server.sh"
+}

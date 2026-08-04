@@ -23,6 +23,15 @@ python3 -m venv .venv
 브라우저에서 <http://localhost:8000>을 엽니다. API 문서는
 <http://localhost:8000/docs>에서 확인할 수 있습니다.
 
+## GitHub Codespaces에서 공유
+
+저장소의 **Code → Codespaces → Create codespace on main**을 선택하면 의존성 설치와
+서버 실행, 8000 포트 전달이 자동으로 진행됩니다.
+
+다른 사람에게 실행 중인 앱을 공유하려면 Codespace의 **PORTS** 탭에서 8000 포트를
+우클릭하고 **Port Visibility → Public**을 선택한 뒤 표시된 URL을 복사합니다.
+Codespace가 중지되면 앱도 중지되며, 재시작 후 포트 공개 설정을 다시 확인해야 합니다.
+
 ## 뉴스 발행 보호
 
 기본값은 수업 시연을 위해 운영자 키 없이 뉴스를 발행할 수 있습니다. 실제로

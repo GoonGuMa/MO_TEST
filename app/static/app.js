@@ -80,25 +80,32 @@ function toast(message, type = 'success') {
   toast.timer = setTimeout(() => { element.hidden = true; }, 4300);
 }
 
-function hideRandomNewsPopup() {
+function hideNewsPopup() {
   const popup = $('#random-news-popup');
   const backdrop = $('#random-news-backdrop');
   popup.classList.remove('visible');
   backdrop.classList.remove('visible');
-  clearTimeout(hideRandomNewsPopup.timer);
-  hideRandomNewsPopup.timer = setTimeout(() => {
+  clearTimeout(hideNewsPopup.timer);
+  hideNewsPopup.timer = setTimeout(() => {
     popup.hidden = true;
     backdrop.hidden = true;
   }, 220);
 }
 
-function showRandomNewsPopup(item) {
+function showNewsPopup(item) {
   const popup = $('#random-news-popup');
   const backdrop = $('#random-news-backdrop');
-  clearTimeout(hideRandomNewsPopup.timer);
+  clearTimeout(hideNewsPopup.timer);
+  $('#random-news-stock').textContent = item.stock_name || '전체 시장';
+  $('#random-news-time').textContent = formatTime(item.published_at);
+  const status = $('#random-news-status');
+  status.textContent = item.applied_at ? '가격 반영 완료' : '가격 반영 예정';
+  status.className = item.applied_at ? 'applied' : 'pending';
   $('#random-news-title').textContent = item.title;
-  $('#random-news-content').textContent = item.content;
-  $('#random-news-content').hidden = !item.content;
+  $('#random-news-content').textContent = item.content || '등록된 뉴스 내용이 없습니다.';
+  const impact = $('#random-news-impact');
+  impact.textContent = item.applied_at ? signedPercent(item.impact_pct) : '반영 후 공개';
+  impact.className = item.applied_at ? directionClass(item.impact_pct) : 'pending';
   backdrop.hidden = false;
   popup.hidden = false;
   requestAnimationFrame(() => {
@@ -122,7 +129,20 @@ function detectRandomNews(news) {
   if (!latest || latest.id <= state.lastRandomNewsId) return;
   state.lastRandomNewsId = latest.id;
   localStorage.setItem('market_lab_last_random_news_id', String(latest.id));
-  showRandomNewsPopup(latest);
+  showNewsPopup(latest);
+}
+
+function openSelectedNews(event) {
+  const itemElement = event.target.closest('[data-news-id]');
+  if (!itemElement || !state.data) return;
+  const item = state.data.news.find((newsItem) => newsItem.id === Number(itemElement.dataset.newsId));
+  if (item) showNewsPopup(item);
+}
+
+function openSelectedNewsWithKeyboard(event) {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  event.preventDefault();
+  openSelectedNews(event);
 }
 
 function renderSummary() {
@@ -273,7 +293,7 @@ function renderNews() {
   $('#news-list').innerHTML = news.length ? news.map((item) => {
     const concealed = item.source === 'random' && !item.applied_at;
     return `
-    <article class="news-item ${concealed ? 'neutral' : item.sentiment}">
+    <article class="news-item ${concealed ? 'neutral' : item.sentiment}" data-news-id="${item.id}" role="button" tabindex="0" aria-haspopup="dialog">
       <div class="news-icon">${concealed ? '◇' : item.sentiment === 'positive' ? '↗' : '↘'}</div>
       <div>
         <div class="news-meta">
@@ -283,8 +303,8 @@ function renderNews() {
         <h3>${escapeHtml(item.title)}</h3>
         ${item.content ? `<p>${escapeHtml(item.content)}</p>` : ''}
       </div>
-      ${concealed
-        ? '<span class="news-undisclosed">시장 반응 대기</span>'
+      ${!item.applied_at
+        ? '<span class="news-undisclosed">변동률 반영 후 공개</span>'
         : `<strong class="news-impact ${directionClass(item.impact_pct)}">${signedPercent(item.impact_pct)}</strong>`}
     </article>`;
   }).join('') : '<div class="empty-block">아직 발행된 뉴스가 없습니다.</div>';
@@ -296,7 +316,7 @@ function renderRecentNews() {
   $('#recent-news-list').innerHTML = recent.length ? recent.map((item) => {
     const concealed = item.source === 'random' && !item.applied_at;
     return `
-    <article class="recent-news-item">
+    <article class="recent-news-item" data-news-id="${item.id}" role="button" tabindex="0" aria-haspopup="dialog">
       <div class="recent-news-meta">
         ${concealed ? '' : `<span>${escapeHtml(item.stock_name)}</span>`}
         <time>${formatTime(item.published_at)}</time>
@@ -450,7 +470,12 @@ $('#menu-close').addEventListener('click', () => {
 });
 
 $('#menu-backdrop').addEventListener('click', () => setMenuOpen(false));
-$('#random-news-close').addEventListener('click', hideRandomNewsPopup);
+$('#random-news-close').addEventListener('click', hideNewsPopup);
+$('#random-news-backdrop').addEventListener('click', hideNewsPopup);
+$('#recent-news-list').addEventListener('click', openSelectedNews);
+$('#recent-news-list').addEventListener('keydown', openSelectedNewsWithKeyboard);
+$('#news-list').addEventListener('click', openSelectedNews);
+$('#news-list').addEventListener('keydown', openSelectedNewsWithKeyboard);
 $('#recent-news-more').addEventListener('click', () => setView('news'));
 
 document.querySelectorAll('[data-view-target]').forEach((button) => {
@@ -469,6 +494,7 @@ document.addEventListener('click', (event) => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
+  if (!$('#random-news-popup').hidden) hideNewsPopup();
   setMenuOpen(false);
   $('#menu-toggle').focus();
 });
