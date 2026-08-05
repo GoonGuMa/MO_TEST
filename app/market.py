@@ -162,6 +162,9 @@ class MarketEngine:
                     CREATE TABLE IF NOT EXISTS price_history (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL,
                         price INTEGER NOT NULL, change_pct REAL NOT NULL,
+                        buy_volume INTEGER NOT NULL DEFAULT 0,
+                        sell_volume INTEGER NOT NULL DEFAULT 0,
+                        volume INTEGER NOT NULL DEFAULT 0,
                         event_type TEXT NOT NULL, created_at REAL NOT NULL
                     );
                     CREATE INDEX IF NOT EXISTS idx_price_history_ticker_id
@@ -209,6 +212,37 @@ class MarketEngine:
                         ON sessions(user_id);
                     """
                 )
+                history_columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(price_history)").fetchall()
+                }
+                for column in ("buy_volume", "sell_volume", "volume"):
+                    if column not in history_columns:
+                        conn.execute(
+                            f"ALTER TABLE price_history ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+                        )
+                # Older price records predate virtual volume. Reconstruct a flow that
+                # follows the recorded direction and magnitude so the 60-point chart
+                # does not contain misleading zero-volume candles.
+                zero_volume_rows = conn.execute(
+                    """SELECT id, price, change_pct, event_type FROM price_history
+                       WHERE volume = 0"""
+                ).fetchall()
+                for history_row in zero_volume_rows:
+                    price = max(1, int(history_row[1]))
+                    change_pct = float(history_row[2] or 0)
+                    activity = 5.0 if history_row[3] == "news" else (
+                        0.8 + min(1.0, abs(change_pct) / 7.0) * 1.2
+                    )
+                    volume = max(100, int((4_000_000_000 / price) * activity))
+                    imbalance = min(0.9, abs(change_pct) / 7.0 * 0.68)
+                    if change_pct < 0:
+                        imbalance *= -1
+                    buy_volume = int(round(volume * (1 + imbalance) / 2))
+                    conn.execute(
+                        """UPDATE price_history
+                           SET buy_volume = ?, sell_volume = ?, volume = ? WHERE id = ?""",
+                        (buy_volume, volume - buy_volume, volume, history_row[0]),
+                    )
                 news_columns = {
                     row[1] for row in conn.execute("PRAGMA table_info(news)").fetchall()
                 }
@@ -242,9 +276,11 @@ class MarketEngine:
                     ).fetchone():
                         conn.execute(
                             """INSERT INTO price_history
-                               (ticker, price, change_pct, event_type, created_at)
-                               VALUES (?, ?, 0, 'initial', ?)""",
-                            (ticker, price, now),
+                               (ticker, price, change_pct, buy_volume, sell_volume, volume,
+                                event_type, created_at)
+                               VALUES (?, ?, 0, ?, ?, ?, 'initial', ?)""",
+                            (ticker, price, int(2_000_000_000 / price),
+                             int(2_000_000_000 / price), int(4_000_000_000 / price), now),
                         )
                 conn.execute(
                     "INSERT OR IGNORE INTO market_meta(key, value) VALUES ('last_tick_at', ?)",
@@ -293,6 +329,29 @@ class MarketEngine:
                 conn.close()
             self._initialized = True
 
+    def _virtual_flow(self, price: int, *, news_impact: float | None = None) -> tuple[int, int, float]:
+        """Generate aggregate order flow and derive its price pressure."""
+        baseline_volume = max(100, int((4_000_000_000 / price) * self.rng.uniform(0.85, 1.15)))
+        if news_impact is None:
+            activity = self.rng.uniform(0.65, 2.1)
+            imbalance = self.rng.uniform(0.08, 0.68)
+            if self.rng.random() < 0.5:
+                imbalance *= -1
+            total_volume = max(1, int(baseline_volume * activity))
+            pressure = imbalance * 0.065 * (activity ** 0.5)
+            magnitude = min(BASE_CHANGE_MAX, max(BASE_CHANGE_MIN, abs(pressure)))
+            change = magnitude if pressure >= 0 else -magnitude
+        else:
+            activity = self.rng.uniform(4.5, 8.5)
+            imbalance = self.rng.uniform(0.72, 0.92)
+            if news_impact < 0:
+                imbalance *= -1
+            total_volume = max(1, int(baseline_volume * activity))
+            change = news_impact / 100
+        buy_volume = max(0, int(round(total_volume * (1 + imbalance) / 2)))
+        sell_volume = max(0, total_volume - buy_volume)
+        return buy_volume, sell_volume, change
+
     def _apply_news_event(self, conn: sqlite3.Connection, event: sqlite3.Row, now: float) -> None:
         targets = conn.execute(
             "SELECT ticker, price FROM market_state" + (" WHERE ticker = ?" if event["ticker"] else ""),
@@ -300,7 +359,10 @@ class MarketEngine:
         ).fetchall()
         for target in targets:
             old_price = int(target["price"])
-            new_price = _round_price(old_price * (1 + float(event["impact_pct"]) / 100))
+            buy_volume, sell_volume, requested_change = self._virtual_flow(
+                old_price, news_impact=float(event["impact_pct"])
+            )
+            new_price = _round_price(old_price * (1 + requested_change))
             actual_change = (new_price / old_price - 1) * 100
             conn.execute(
                 """UPDATE market_state SET previous_price = price, price = ?, updated_at = ?
@@ -309,9 +371,11 @@ class MarketEngine:
             )
             conn.execute(
                 """INSERT INTO price_history
-                   (ticker, price, change_pct, event_type, created_at)
-                   VALUES (?, ?, ?, 'news', ?)""",
-                (target["ticker"], new_price, actual_change, event["effective_at"]),
+                   (ticker, price, change_pct, buy_volume, sell_volume, volume,
+                    event_type, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'news', ?)""",
+                (target["ticker"], new_price, actual_change, buy_volume, sell_volume,
+                 buy_volume + sell_volume, event["effective_at"]),
             )
         conn.execute("UPDATE news SET applied_at = ? WHERE id = ?", (now, event["id"]))
 
@@ -381,9 +445,8 @@ class MarketEngine:
                 self._apply_news_event(conn, news_event, now)
                 continue
             for stock in conn.execute("SELECT ticker, price FROM market_state").fetchall():
-                direction = 1 if self.rng.random() >= 0.5 else -1
-                requested_change = direction * self.rng.uniform(BASE_CHANGE_MIN, BASE_CHANGE_MAX)
                 old_price = int(stock["price"])
+                buy_volume, sell_volume, requested_change = self._virtual_flow(old_price)
                 new_price = _round_price(old_price * (1 + requested_change))
                 actual_change = ((new_price / old_price) - 1) * 100
                 conn.execute(
@@ -393,9 +456,11 @@ class MarketEngine:
                 )
                 conn.execute(
                     """INSERT INTO price_history
-                       (ticker, price, change_pct, event_type, created_at)
-                       VALUES (?, ?, ?, 'tick', ?)""",
-                    (stock["ticker"], new_price, actual_change, event_at),
+                       (ticker, price, change_pct, buy_volume, sell_volume, volume,
+                        event_type, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 'tick', ?)""",
+                    (stock["ticker"], new_price, actual_change, buy_volume, sell_volume,
+                     buy_volume + sell_volume, event_at),
                 )
         new_last_tick = last_tick + tick_count * TICK_SECONDS
         conn.execute(
@@ -572,9 +637,18 @@ class MarketEngine:
                 ticker = STOCKS[0][0]
             stocks = conn.execute("SELECT * FROM market_state ORDER BY ticker").fetchall()
             history = conn.execute(
-                """SELECT price, change_pct, event_type, created_at FROM price_history
+                """SELECT price, change_pct, buy_volume, sell_volume, volume,
+                          event_type, created_at FROM price_history
                    WHERE ticker = ? ORDER BY id DESC LIMIT 60""", (ticker,)
             ).fetchall()
+            latest_flows = {
+                row["ticker"]: row for row in conn.execute(
+                    """SELECT h.ticker, h.buy_volume, h.sell_volume, h.volume
+                       FROM price_history h JOIN (
+                         SELECT ticker, MAX(id) AS id FROM price_history GROUP BY ticker
+                       ) latest ON latest.id = h.id"""
+                ).fetchall()
+            }
             news = conn.execute(
                 """SELECT n.*, m.name AS stock_name FROM news n
                    LEFT JOIN market_state m ON m.ticker = n.ticker
@@ -595,9 +669,14 @@ class MarketEngine:
                 "change_pct": round((row["price"] / row["previous_price"] - 1) * 100, 2),
                 "total_change_pct": round((row["price"] / row["open_price"] - 1) * 100, 2),
                 "updated_at": _iso(row["updated_at"]),
+                "buy_volume": int(latest_flows[row["ticker"]]["buy_volume"]),
+                "sell_volume": int(latest_flows[row["ticker"]]["sell_volume"]),
+                "volume": int(latest_flows[row["ticker"]]["volume"]),
             } for row in stocks],
             "history": [{
                 "price": row["price"], "change_pct": round(row["change_pct"], 2),
+                "buy_volume": int(row["buy_volume"]),
+                "sell_volume": int(row["sell_volume"]), "volume": int(row["volume"]),
                 "event_type": row["event_type"], "created_at": _iso(row["created_at"]),
             } for row in reversed(history)],
             "portfolio": portfolio,
@@ -729,3 +808,64 @@ class MarketEngine:
             portfolio = self._portfolio(conn, user_id)
             conn.commit()
         return {"message": "계좌를 초기화했습니다.", "portfolio": portfolio}
+
+    def sell_all(self, user_id: str) -> dict:
+        """Sell every position at the prices captured in one transaction."""
+        self._validate_user_id(user_id)
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._advance(conn, now)
+            self._ensure_account(conn, user_id, now)
+            positions = conn.execute(
+                """SELECT p.ticker, p.quantity, m.price
+                   FROM positions p JOIN market_state m ON m.ticker = p.ticker
+                   WHERE p.user_id = ? AND p.quantity > 0""", (user_id,),
+            ).fetchall()
+            if not positions:
+                raise MarketError(400, "매도할 보유 종목이 없습니다.")
+            total = 0
+            for position in positions:
+                quantity, price = int(position["quantity"]), int(position["price"])
+                proceeds = quantity * price
+                total += proceeds
+                conn.execute(
+                    """INSERT INTO trades(user_id, ticker, side, quantity, price, total, executed_at)
+                       VALUES (?, ?, 'sell', ?, ?, ?, ?)""",
+                    (user_id, position["ticker"], quantity, price, proceeds, now),
+                )
+            conn.execute("UPDATE accounts SET cash = cash + ? WHERE user_id = ?", (total, user_id))
+            conn.execute("DELETE FROM positions WHERE user_id = ?", (user_id,))
+            portfolio = self._portfolio(conn, user_id)
+            conn.commit()
+        return {"message": f"보유 종목 {len(positions)}개를 모두 매도했습니다.",
+                "sold_count": len(positions), "total": total, "portfolio": portfolio}
+
+    def randomize_market(self) -> dict:
+        """Start every quote from a fresh price near its configured baseline."""
+        now = time.time()
+        prices = {}
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for ticker, _name, _sector, baseline in STOCKS:
+                new_price = _round_price(baseline * self.rng.uniform(0.85, 1.15))
+                prices[ticker] = new_price
+                conn.execute(
+                    """UPDATE market_state SET price = ?, previous_price = ?, open_price = ?, updated_at = ?
+                       WHERE ticker = ?""", (new_price, new_price, new_price, now, ticker),
+                )
+                conn.execute("DELETE FROM price_history WHERE ticker = ?", (ticker,))
+                conn.execute(
+                    """INSERT INTO price_history
+                       (ticker, price, change_pct, buy_volume, sell_volume, volume,
+                        event_type, created_at)
+                       VALUES (?, ?, 0, ?, ?, ?, 'initial', ?)""",
+                    (ticker, new_price, int(2_000_000_000 / new_price),
+                     int(2_000_000_000 / new_price), int(4_000_000_000 / new_price), now),
+                )
+            conn.execute("DELETE FROM news")
+            conn.execute("UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'", (str(now),))
+            conn.execute("UPDATE market_meta SET value = ? WHERE key = 'next_random_news_at'",
+                         (str(now + self.rng.uniform(RANDOM_NEWS_INTERVAL_MIN, RANDOM_NEWS_INTERVAL_MAX)),))
+            conn.commit()
+        return {"message": "전 종목 가격을 랜덤 초기화했습니다.", "prices": prices}

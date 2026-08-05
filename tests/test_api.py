@@ -79,6 +79,9 @@ def test_normal_tick_moves_every_stock_within_configured_range(market_app):
         current = stock(after, previous["ticker"])
         change = abs((current["price"] / previous["price"] - 1) * 100)
         assert 0.09 <= change <= 7.01
+        assert current["volume"] == current["buy_volume"] + current["sell_volume"]
+        assert current["volume"] > 0
+        assert (current["change_pct"] > 0) == (current["buy_volume"] > current["sell_volume"])
 
 
 def test_positive_news_applies_twenty_percent_to_selected_stock(market_app):
@@ -114,6 +117,9 @@ def test_positive_news_applies_twenty_percent_to_selected_stock(market_app):
     assert after["news"][0]["source"] == "manual"
     assert after["news"][0]["applied_at"] is not None
     assert after["history"][-1]["event_type"] == "news"
+    news_flow = after["history"][-1]
+    assert news_flow["volume"] == news_flow["buy_volume"] + news_flow["sell_volume"]
+    assert news_flow["buy_volume"] > news_flow["sell_volume"]
     assert stock(snapshot(app))["price"] == stock(after)["price"]
 
 
@@ -211,6 +217,50 @@ def test_account_reset_restores_initial_cash(market_app):
     assert response.status_code == 200
     assert response.json()["portfolio"]["cash"] == 100_000_000
     assert response.json()["portfolio"]["positions"] == []
+
+
+def test_sell_all_closes_every_position_at_current_prices(market_app):
+    app, _ = market_app
+    cookies, _ = register(app)
+    before = snapshot(app, cookies=cookies)
+    for ticker, quantity in (("005930", 3), ("035720", 5)):
+        assert request(app, "POST", "/api/market/orders", json={
+            "ticker": ticker, "side": "buy", "quantity": quantity,
+        }, cookies=cookies).status_code == 200
+    response = request(app, "POST", "/api/market/accounts/sell-all", cookies=cookies)
+    assert response.status_code == 200
+    result = response.json()
+    expected = stock(before, "005930")["price"] * 3 + stock(before, "035720")["price"] * 5
+    assert result["sold_count"] == 2
+    assert result["total"] == expected
+    assert result["portfolio"]["positions"] == []
+    assert result["portfolio"]["cash"] == 100_000_000
+    assert request(app, "POST", "/api/market/accounts/sell-all", cookies=cookies).status_code == 400
+
+
+def test_randomize_market_resets_quotes_near_baselines_and_keeps_positions(market_app):
+    app, database = market_app
+    cookies, _ = register(app)
+    request(app, "POST", "/api/market/orders", json={
+        "ticker": "005930", "side": "buy", "quantity": 2,
+    }, cookies=cookies)
+    with sqlite3.connect(database) as conn:
+        conn.execute("UPDATE market_state SET price = price * 20")
+        conn.commit()
+    request(app, "POST", "/api/market/news", json={
+        "title": "초기화 대상 뉴스", "content": "", "sentiment": "positive",
+        "ticker": "005930", "impact_pct": 15, "admin_key": "",
+    })
+    response = request(app, "POST", "/api/market/randomize", cookies=cookies)
+    assert response.status_code == 200
+    after = snapshot(app, cookies=cookies)
+    assert after["news"] == []
+    baselines = {"005930": 84_000, "000660": 218_000, "035420": 192_000,
+                 "035720": 46_500, "005380": 247_000, "051910": 318_000}
+    for item in after["stocks"]:
+        assert baselines[item["ticker"]] * .85 <= item["price"] <= baselines[item["ticker"]] * 1.15
+        assert item["total_change_pct"] == 0
+    assert after["portfolio"]["positions"][0]["quantity"] == 2
 
 
 def test_auth_register_login_logout_and_duplicate_username(market_app):

@@ -11,6 +11,8 @@ const state = {
   data: null,
   countdownEnd: 0,
   refreshing: false,
+  chartPointLimit: 20,
+  marketRandomizeUnlocked: false,
   randomNewsInitialized: false,
   lastRandomNewsId: 0,
 };
@@ -28,6 +30,32 @@ function signedPercent(value) {
   return `${number > 0 ? '+' : ''}${number.toFixed(2)}%`;
 }
 
+function formatVolume(value) {
+  const number = Number(value || 0);
+  if (number >= 100_000_000) return `${(number / 100_000_000).toFixed(1)}억`;
+  if (number >= 10_000) return `${(number / 10_000).toFixed(1)}만`;
+  return integer.format(number);
+}
+
+function withVirtualVolume(point) {
+  if (Number(point.volume) > 0) return point;
+  const price = Math.max(1, Number(point.price || 1));
+  const change = Number(point.change_pct || 0);
+  const activity = point.event_type === 'news'
+    ? 5
+    : .8 + Math.min(1, Math.abs(change) / 7) * 1.2;
+  const volume = Math.max(100, Math.round(4_000_000_000 / price * activity));
+  let imbalance = Math.min(.9, Math.abs(change) / 7 * .68);
+  if (change < 0) imbalance *= -1;
+  const buyVolume = Math.round(volume * (1 + imbalance) / 2);
+  return {
+    ...point,
+    buy_volume: buyVolume,
+    sell_volume: volume - buyVolume,
+    volume,
+  };
+}
+
 function directionClass(value) {
   return Number(value) > 0 ? 'is-up' : Number(value) < 0 ? 'is-down' : 'is-flat';
 }
@@ -43,6 +71,14 @@ function formatTime(value, seconds = true) {
 
 function currentStock() {
   return state.data?.stocks.find((stock) => stock.ticker === state.ticker);
+}
+
+function syncMarketActionLock() {
+  const button = $('#randomize-market');
+  button.disabled = !state.marketRandomizeUnlocked;
+  button.title = state.marketRandomizeUnlocked
+    ? '전 종목 가격을 새 기준가로 재설정'
+    : '전 종목 매도 후 사용할 수 있습니다';
 }
 
 function apiErrorMessage(data, fallback) {
@@ -234,72 +270,113 @@ function renderStocks() {
 function renderChart() {
   const host = $('#price-chart');
   const stock = currentStock();
-  const points = state.data.history || [];
+  const points = (state.data.history || [])
+    .map(withVirtualVolume)
+    .slice(-state.chartPointLimit);
   if (!stock || !points.length) {
     host.innerHTML = '<div class="empty-block">가격 데이터가 없습니다.</div>';
     return;
   }
 
   const width = 820, height = 260;
-  const margin = { top: 16, right: 76, bottom: 30, left: 12 };
+  const margin = { top: 10, right: 78, bottom: 25, left: 12 };
   const plotWidth = width - margin.left - margin.right;
-  const plotHeight = height - margin.top - margin.bottom;
+  const plotHeight = 176;
+  const volumeTop = 202;
+  const volumeHeight = 31;
+  const volumeBottom = volumeTop + volumeHeight;
   const position = state.data.portfolio.positions
     .find((item) => item.ticker === stock.ticker);
-  const prices = points.map((point) => Number(point.price));
-  const scalePrices = position ? [...prices, Number(position.avg_price)] : prices;
+  const maxVolume = Math.max(1, ...points.map((point) => Number(point.volume || 0)));
+  const candles = points.map((point, index) => {
+    const close = Number(point.price);
+    const open = index
+      ? Number(points[index - 1].price)
+      : close / (1 + Number(point.change_pct || 0) / 100);
+    const bodyRange = Math.abs(close - open);
+    const volumeRatio = Number(point.volume || 0) / maxVolume;
+    const wick = Math.max(bodyRange * .18, open * (.0007 + volumeRatio * .0012));
+    return {
+      ...point, open, close,
+      high: Math.max(open, close) + wick,
+      low: Math.max(1000, Math.min(open, close) - wick),
+      up: close >= open,
+    };
+  });
+  const scalePrices = candles.flatMap((candle) => [candle.high, candle.low]);
+  if (position) scalePrices.push(Number(position.avg_price));
   const rawMin = Math.min(...scalePrices), rawMax = Math.max(...scalePrices);
-  const padding = Math.max((rawMax - rawMin) * .12, rawMax * .005, 10);
+  const padding = Math.max((rawMax - rawMin) * .08, rawMax * .002, 10);
   const min = rawMin - padding, max = rawMax + padding;
-  const x = (index) => margin.left + (points.length === 1 ? plotWidth / 2 : index / (points.length - 1) * plotWidth);
+  const slot = plotWidth / Math.max(1, candles.length);
+  const x = (index) => margin.left + slot * index + slot / 2;
   const y = (price) => margin.top + (max - price) / (max - min) * plotHeight;
-  const coordinates = points.map((point, index) => [x(index), y(point.price)]);
-  const line = coordinates.map(([px, py], index) => `${index ? 'L' : 'M'}${px.toFixed(1)},${py.toFixed(1)}`).join(' ');
-  const area = `${line} L${coordinates.at(-1)[0].toFixed(1)},${margin.top + plotHeight} L${coordinates[0][0].toFixed(1)},${margin.top + plotHeight} Z`;
-  const up = stock.total_change_pct >= 0;
-  const color = up ? '#e23d48' : '#1e63d5';
-  const gradientId = `area-${stock.ticker}`;
+  const maxCandleWidth = candles.length <= 10 ? 34
+    : candles.length <= 20 ? 20
+      : candles.length <= 30 ? 15 : 9;
+  const bodyWidth = Math.max(3, Math.min(maxCandleWidth, slot * .62));
+  const volumeWidth = Math.max(3, Math.min(maxCandleWidth, slot * .68));
 
-  const grid = Array.from({ length: 5 }, (_, index) => {
-    const ratio = index / 4;
+  const horizontalGrid = Array.from({ length: 6 }, (_, index) => {
+    const ratio = index / 5;
     const py = margin.top + ratio * plotHeight;
     const value = max - ratio * (max - min);
     return `<line class="grid-line" x1="${margin.left}" y1="${py}" x2="${margin.left + plotWidth}" y2="${py}" />
       <text class="chart-label" x="${margin.left + plotWidth + 8}" y="${py + 3}">${integer.format(Math.round(value))}</text>`;
   }).join('');
-
-  const labelIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
-  const timeLabels = labelIndexes.map((index) => {
-    const date = new Date(points[index].created_at);
-    const label = date.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-    const anchor = index === 0 ? 'start' : index === points.length - 1 ? 'end' : 'middle';
-    return `<text class="chart-label" x="${x(index)}" y="${height - 7}" text-anchor="${anchor}">${label}</text>`;
+  const verticalGrid = Array.from({ length: 12 }, (_, index) => {
+    const px = margin.left + index / 11 * plotWidth;
+    return `<line class="vertical-grid-line" x1="${px}" y1="${margin.top}" x2="${px}" y2="${volumeBottom}" />`;
+  }).join('');
+  const newsBands = candles.map((candle, index) => candle.event_type === 'news'
+    ? `<rect class="news-band" x="${x(index) - slot / 2}" y="${margin.top}" width="${slot}" height="${volumeBottom - margin.top}" />`
+    : '').join('');
+  const candleShapes = candles.map((candle, index) => {
+    const px = x(index);
+    const bodyTop = y(Math.max(candle.open, candle.close));
+    const bodyBottom = y(Math.min(candle.open, candle.close));
+    const bodyHeight = Math.max(1.5, bodyBottom - bodyTop);
+    const klass = candle.up ? 'up' : 'down';
+    return `<line class="candle-wick ${klass}" x1="${px}" y1="${y(candle.high)}" x2="${px}" y2="${y(candle.low)}" />
+      <rect class="candle-body ${klass}" x="${px - bodyWidth / 2}" y="${bodyTop}" width="${bodyWidth}" height="${bodyHeight}" />`;
+  }).join('');
+  const volumeBars = candles.map((candle, index) => {
+    const barHeight = Number(candle.volume || 0) / maxVolume * volumeHeight;
+    return `<rect class="volume-bar ${candle.up ? 'buy' : 'sell'}" x="${x(index) - volumeWidth / 2}" y="${volumeBottom - barHeight}" width="${volumeWidth}" height="${Math.max(1, barHeight)}" />`;
   }).join('');
 
-  const newsMarkers = points.map((point, index) => point.event_type === 'news' ? `
-    <circle class="news-marker" cx="${x(index)}" cy="${y(point.price)}" r="5" />
-    <text class="news-label" x="${x(index)}" y="${Math.max(10, y(point.price) - 9)}" text-anchor="middle">NEWS</text>` : '').join('');
-
-  const averagePriceLine = position ? (() => {
-    const lineY = y(Number(position.avg_price));
-    return `<line class="average-price-line" x1="${margin.left}" y1="${lineY}" x2="${margin.left + plotWidth}" y2="${lineY}" />`;
-  })() : '';
-
+  const labelIndexes = [...new Set([0, Math.floor((candles.length - 1) / 2), candles.length - 1])];
+  const timeLabels = labelIndexes.map((index) => {
+    const date = new Date(candles[index].created_at);
+    const label = date.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    const anchor = index === 0 ? 'start' : index === candles.length - 1 ? 'end' : 'middle';
+    return `<text class="chart-label" x="${x(index)}" y="${height - 6}" text-anchor="${anchor}">${label}</text>`;
+  }).join('');
+  const averagePriceLine = position
+    ? `<line class="average-price-line" x1="${margin.left}" y1="${y(Number(position.avg_price))}" x2="${margin.left + plotWidth}" y2="${y(Number(position.avg_price))}" />`
+    : '';
+  const currentY = y(Number(stock.price));
+  const currentColor = Number(stock.change_pct) >= 0 ? '#ef244f' : '#2563eb';
+  const currentPrice = `<line class="current-price-line" x1="${margin.left}" y1="${currentY}" x2="${margin.left + plotWidth}" y2="${currentY}" stroke="${currentColor}" />
+    <rect class="current-price-tag" x="${margin.left + plotWidth + 4}" y="${currentY - 9}" width="70" height="18" rx="2" fill="${currentColor}" />
+    <text class="current-price-text" x="${margin.left + plotWidth + 39}" y="${currentY + 3}" text-anchor="middle">${integer.format(stock.price)}</text>`;
   const hoverLayer = `<g id="chart-hover" class="chart-hover" visibility="hidden">
-      <line class="chart-hover-guide" y1="${margin.top}" y2="${margin.top + plotHeight}" />
+      <line class="chart-hover-guide" y1="${margin.top}" y2="${volumeBottom}" />
       <circle class="chart-hover-dot" r="4" />
       <g id="chart-tooltip" class="chart-tooltip">
-        <rect width="138" height="42" rx="6" />
+        <rect width="176" height="78" rx="6" />
         <text class="chart-tooltip-time" x="10" y="15"></text>
         <text class="chart-tooltip-price" x="10" y="32"></text>
+        <text class="chart-tooltip-ohlc" x="10" y="49"></text>
+        <text class="chart-tooltip-volume" x="10" y="66"></text>
       </g>
     </g>
-    <rect id="chart-hover-capture" class="chart-hover-capture" x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" />`;
+    <rect id="chart-hover-capture" class="chart-hover-capture" x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${volumeBottom - margin.top}" />`;
 
-  host.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(stock.name)} 가격 흐름">
-    <defs><linearGradient id="${gradientId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".8"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
-    ${grid}<path class="chart-area" d="${area}" fill="url(#${gradientId})"/><path class="chart-line-path" d="${line}" stroke="${color}"/>
-    ${newsMarkers}${averagePriceLine}${timeLabels}${hoverLayer}
+  host.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(stock.name)} 캔들 차트">
+    ${verticalGrid}${horizontalGrid}${newsBands}${candleShapes}${averagePriceLine}${currentPrice}
+    <line class="volume-divider" x1="${margin.left}" y1="${volumeTop - 5}" x2="${margin.left + plotWidth}" y2="${volumeTop - 5}" />
+    ${volumeBars}${timeLabels}${hoverLayer}
   </svg>`;
 
   const svg = host.querySelector('svg');
@@ -310,19 +387,20 @@ function renderChart() {
   const tooltip = $('#chart-tooltip');
   const tooltipTime = hover.querySelector('.chart-tooltip-time');
   const tooltipPrice = hover.querySelector('.chart-tooltip-price');
+  const tooltipOhlc = hover.querySelector('.chart-tooltip-ohlc');
+  const tooltipVolume = hover.querySelector('.chart-tooltip-volume');
 
   capture.addEventListener('pointermove', (event) => {
     const bounds = svg.getBoundingClientRect();
     const svgX = (event.clientX - bounds.left) / bounds.width * width;
-    const ratio = Math.max(0, Math.min(1, (svgX - margin.left) / plotWidth));
-    const index = points.length === 1 ? 0 : Math.round(ratio * (points.length - 1));
-    const [pointX, pointY] = coordinates[index];
-    const tooltipX = Math.max(margin.left, Math.min(margin.left + plotWidth - 138, pointX - 69));
-    const tooltipY = pointY < margin.top + 54 ? pointY + 10 : pointY - 50;
-    const pointTime = new Date(points[index].created_at).toLocaleTimeString('ko-KR', {
+    const index = Math.max(0, Math.min(candles.length - 1, Math.floor((svgX - margin.left) / slot)));
+    const candle = candles[index];
+    const pointX = x(index), pointY = y(candle.close);
+    const tooltipX = Math.max(margin.left, Math.min(margin.left + plotWidth - 176, pointX - 88));
+    const tooltipY = pointY < margin.top + 86 ? pointY + 8 : pointY - 84;
+    const pointTime = new Date(candle.created_at).toLocaleTimeString('ko-KR', {
       hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
     });
-
     hover.setAttribute('visibility', 'visible');
     guide.setAttribute('x1', pointX);
     guide.setAttribute('x2', pointX);
@@ -330,12 +408,11 @@ function renderChart() {
     dot.setAttribute('cy', pointY);
     tooltip.setAttribute('transform', `translate(${tooltipX} ${tooltipY})`);
     tooltipTime.textContent = pointTime;
-    tooltipPrice.textContent = `${integer.format(points[index].price)}원`;
+    tooltipPrice.textContent = `${integer.format(candle.close)}원 · ${signedPercent(candle.change_pct)}`;
+    tooltipOhlc.textContent = `시 ${integer.format(Math.round(candle.open))}  고 ${integer.format(Math.round(candle.high))}  저 ${integer.format(Math.round(candle.low))}`;
+    tooltipVolume.textContent = `거래량 ${formatVolume(candle.volume)}주`;
   });
-
-  capture.addEventListener('pointerleave', () => {
-    hover.setAttribute('visibility', 'hidden');
-  });
+  capture.addEventListener('pointerleave', () => hover.setAttribute('visibility', 'hidden'));
 
   $('#chart-title').textContent = `${stock.name} (${stock.ticker})`;
   $('#live-price').textContent = `${integer.format(stock.price)}원`;
@@ -394,8 +471,8 @@ function renderTables() {
   $('#positions').innerHTML = positions.length ? positions.map((position) => `
     <tr><td><strong>${escapeHtml(position.name)}</strong><small>${position.ticker}</small></td>
       <td>${integer.format(position.quantity)}주</td><td>${integer.format(Math.round(position.avg_price))}원</td>
-      <td>${won.format(position.market_value)}</td><td class="${directionClass(position.profit_pct)}"><strong>${signedPercent(position.profit_pct)}</strong><small>${won.format(position.profit)}</small></td></tr>`).join('')
-    : '<tr><td colspan="5" class="empty">보유 종목이 없습니다.</td></tr>';
+      <td>${integer.format(position.price)}원</td><td>${won.format(position.market_value)}</td><td><strong class="${directionClass(position.profit_pct)}">${signedPercent(position.profit_pct)}</strong><small>${won.format(position.profit)}</small></td></tr>`).join('')
+    : '<tr><td colspan="6" class="empty">보유 종목이 없습니다.</td></tr>';
 
   const trades = state.data.trades;
   $('#trades').innerHTML = trades.length ? trades.map((trade) => `
@@ -481,6 +558,12 @@ function setView(view, { updateHash = true } = {}) {
   setMenuOpen(false);
   if (updateHash && location.hash !== `#${activeView}`) location.hash = activeView;
 }
+
+$('#chart-point-limit').addEventListener('change', (event) => {
+  const limit = Number(event.target.value);
+  state.chartPointLimit = [10, 20, 30, 60].includes(limit) ? limit : 20;
+  if (state.data) renderChart();
+});
 
 $('#stock-list').addEventListener('click', (event) => {
   const row = event.target.closest('tr[data-ticker]');
@@ -646,6 +729,62 @@ $('#reset-account').addEventListener('click', async () => {
   }
 });
 
+
+$('#sell-all').addEventListener('click', async () => {
+  if (!state.user) { showAuthModal('login'); return; }
+  const positions = state.data?.portfolio?.positions || [];
+  if (!positions.length) { toast('매도할 보유 종목이 없습니다.', 'error'); return; }
+  if (!confirm(`보유 중인 ${positions.length}개 종목을 현재가로 모두 매도할까요?`)) return;
+  const button = $('#sell-all');
+  button.disabled = true;
+  try {
+    let result;
+    try {
+      result = await api('/api/market/accounts/sell-all', { method: 'POST' });
+    } catch (error) {
+      if (![404, 405].includes(error.status)) throw error;
+      let total = 0;
+      for (const position of positions) {
+        const sold = await api('/api/market/orders', {
+          method: 'POST',
+          body: JSON.stringify({
+            ticker: position.ticker,
+            side: 'sell',
+            quantity: position.quantity,
+          }),
+        });
+        total += Number(sold.total || 0);
+      }
+      result = {
+        message: `보유 종목 ${positions.length}개를 모두 매도했습니다.`,
+        total,
+      };
+    }
+    state.marketRandomizeUnlocked = true;
+    syncMarketActionLock();
+    toast(`${result.message} · ${won.format(result.total)}`);
+    await refresh();
+  } catch (error) {
+    await refresh();
+    toast(error.message, 'error');
+  } finally { button.disabled = false; }
+});
+
+$('#randomize-market').addEventListener('click', async () => {
+  if (!state.user) { showAuthModal('login'); return; }
+  if (!confirm('전 종목 가격을 기준가 ±15% 범위에서 새로 설정할까요?\n보유 수량과 거래 내역은 유지됩니다.')) return;
+  const button = $('#randomize-market');
+  button.disabled = true;
+  try {
+    const result = await api('/api/market/randomize', { method: 'POST' });
+    state.marketRandomizeUnlocked = false;
+    syncMarketActionLock();
+    toast(result.message);
+    await refresh();
+  } catch (error) { toast(error.message, 'error'); }
+  finally { syncMarketActionLock(); }
+});
+
 $('#auth-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const submit = $('#auth-submit');
@@ -664,6 +803,8 @@ $('#auth-form').addEventListener('submit', async (event) => {
       body: JSON.stringify({ username: $('#auth-username').value, password }),
     });
     state.user = result.user;
+    state.marketRandomizeUnlocked = false;
+    syncMarketActionLock();
     renderAuth();
     hideAuthModal();
     $('#auth-form').reset();
@@ -681,6 +822,8 @@ $('#logout').addEventListener('click', async () => {
   try {
     const result = await api('/api/auth/logout', { method: 'POST' });
     state.user = null;
+    state.marketRandomizeUnlocked = false;
+    syncMarketActionLock();
     renderAuth();
     toast(result.message);
     await refresh();
@@ -701,4 +844,5 @@ setInterval(() => {
 }, 250);
 
 setView(location.hash === '#news' ? 'news' : 'trading', { updateHash: false });
+syncMarketActionLock();
 initializeAuth();

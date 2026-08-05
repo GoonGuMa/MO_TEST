@@ -127,6 +127,14 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     async def reset(user: dict = Depends(current_user)) -> dict:
         return engine.reset_account(engine.account_id_for_user(user["id"]))
 
+    @app.post("/api/market/accounts/sell-all")
+    async def sell_all(user: dict = Depends(current_user)) -> dict:
+        return engine.sell_all(engine.account_id_for_user(user["id"]))
+
+    @app.post("/api/market/randomize")
+    async def randomize_market(_: dict = Depends(current_user)) -> dict:
+        return engine.randomize_market()
+
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app
 

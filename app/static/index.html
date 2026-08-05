@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="뉴스 이벤트로 움직이는 교육용 모의투자">
   <title>MARKET LAB — 뉴스 기반 모의투자</title>
-  <link rel="stylesheet" href="/styles.css?v=13">
+  <link rel="stylesheet" href="/styles.css?v=19">
 </head>
 <body>
   <header class="topbar">
@@ -99,6 +99,16 @@
           <h1>뉴스로 움직이는<br><em>모의투자 시장</em></h1>
           <p>15초 기본 변동과 뉴스 급등락을 관찰하고, 투자 판단과 리스크 관리를 연습하세요.</p>
         </div>
+        <div class="market-actions" aria-label="시장 빠른 작업">
+          <button id="sell-all" class="market-action sell-all" type="button">
+            <span class="market-action-icon" aria-hidden="true">₩</span>
+            <span><strong>전 종목 매도</strong><small>보유 주식을 현재가로 전량 매도</small></span>
+          </button>
+          <button id="randomize-market" class="market-action randomize" type="button" disabled title="전 종목 매도 후 사용할 수 있습니다">
+            <span class="market-action-icon" aria-hidden="true">↻</span>
+            <span><strong>주식 랜덤 초기화</strong><small>전 종목 가격을 새 기준가로 재설정</small></span>
+          </button>
+        </div>
       </section>
 
     <section class="account-grid" aria-label="계좌 요약">
@@ -136,7 +146,18 @@
           <div class="live-price"><strong id="live-price">-</strong><span id="live-change">-</span></div>
         </header>
         <div id="price-chart" class="price-chart" aria-label="선택 종목 가격 차트"></div>
-        <div class="chart-legend"><span><i class="line"></i>가격 흐름</span><span><i class="news"></i>뉴스 발생</span><small>최근 60개 변동</small></div>
+        <div class="chart-legend">
+          <span><i class="candle up"></i>상승</span><span><i class="candle down"></i>하락</span><span><i class="news"></i>뉴스</span>
+          <label class="chart-count-select" for="chart-point-limit">
+            <select id="chart-point-limit" aria-label="차트 표시 개수">
+              <option value="10">10개씩 보기</option>
+              <option value="20" selected>20개씩 보기</option>
+              <option value="30">30개씩 보기</option>
+              <option value="60">60개씩 보기</option>
+            </select>
+            <span aria-hidden="true">▾</span>
+          </label>
+        </div>
       </article>
 
       <aside class="panel order-panel">
@@ -162,7 +183,7 @@
     <section class="content-grid portfolio-grid">
       <article class="panel">
         <header class="panel-head"><div><small>MY PORTFOLIO</small><h2>보유 종목</h2></div><button id="reset-account" class="text-button" type="button">계좌 초기화</button></header>
-        <div class="table-scroll"><table class="data-table"><thead><tr><th>종목</th><th>수량</th><th>평균단가</th><th>평가금액</th><th>수익률</th></tr></thead><tbody id="positions"></tbody></table></div>
+        <div class="table-scroll"><table class="data-table"><thead><tr><th>종목</th><th>수량</th><th>평균단가</th><th>현재가</th><th>평가금액</th><th>수익률</th></tr></thead><tbody id="positions"></tbody></table></div>
       </article>
       <article class="panel">
         <header class="panel-head"><div><small>ORDER HISTORY</small><h2>최근 거래</h2></div></header>
@@ -210,6 +231,6 @@
   </main>
 
   <footer><strong>MARKET LAB</strong><span>교육용 가상 시장 · 실제 투자 및 실제 시세와 무관합니다.</span></footer>
-  <script type="module" src="/app.js?v=14"></script>
+  <script type="module" src="/app.js?v=25"></script>
 </body>
 </html>
