@@ -20,7 +20,7 @@ SESSION_COOKIE = "market_lab_session"
 class OrderRequest(BaseModel):
     ticker: str = Field(pattern=r"^\d{6}$")
     side: str = Field(pattern="^(buy|sell)$")
-    quantity: int = Field(ge=1, le=1_000_000)
+    quantity: int = Field(ge=1)
 
 
 class AuthRequest(BaseModel):

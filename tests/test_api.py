@@ -217,7 +217,7 @@ def test_news_admin_key_is_enforced(market_app, monkeypatch):
     monkeypatch.setenv("MOCK_MARKET_ADMIN_KEY", "class-secret")
     payload = {
         "title": "신제품 판매 호조", "content": "", "sentiment": "positive",
-        "ticker": "035720", "impact_pct": 15, "admin_key": "wrong",
+        "ticker": "105560", "impact_pct": 15, "admin_key": "wrong",
     }
     assert request(app, "POST", "/api/market/news", json=payload).status_code == 403
     payload["admin_key"] = "class-secret"
@@ -240,14 +240,14 @@ def test_sell_all_closes_every_position_at_current_prices(market_app):
     app, _ = market_app
     cookies, _ = register(app)
     before = snapshot(app, cookies=cookies)
-    for ticker, quantity in (("005930", 3), ("035720", 5)):
+    for ticker, quantity in (("005930", 3), ("105560", 5)):
         assert request(app, "POST", "/api/market/orders", json={
             "ticker": ticker, "side": "buy", "quantity": quantity,
         }, cookies=cookies).status_code == 200
     response = request(app, "POST", "/api/market/accounts/sell-all", cookies=cookies)
     assert response.status_code == 200
     result = response.json()
-    expected = stock(before, "005930")["price"] * 3 + stock(before, "035720")["price"] * 5
+    expected = stock(before, "005930")["price"] * 3 + stock(before, "105560")["price"] * 5
     assert result["sold_count"] == 2
     assert result["total"] == expected
     assert result["portfolio"]["positions"] == []
@@ -304,7 +304,7 @@ def test_randomize_market_resets_quotes_near_baselines_and_keeps_positions(marke
     after = snapshot(app, cookies=cookies)
     assert after["news"] == []
     baselines = {"005930": 84_000, "000100": 120_000, "035420": 192_000,
-                 "035720": 46_500, "005380": 247_000, "051910": 318_000}
+                 "105560": 84_000, "005380": 247_000, "051910": 318_000}
     for item in after["stocks"]:
         assert baselines[item["ticker"]] * .85 <= item["price"] <= baselines[item["ticker"]] * 1.15
         assert item["total_change_pct"] == 0

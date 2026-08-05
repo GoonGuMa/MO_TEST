@@ -36,7 +36,7 @@ STOCKS = (
     ("005930", "삼성전자", "반도체", 84_000),
     ("000100", "유한양행", "제약", 120_000),
     ("035420", "NAVER", "인터넷", 192_000),
-    ("035720", "카카오", "인터넷", 46_500),
+    ("105560", "KB금융", "금융", 84_000),
     ("005380", "현대차", "자동차", 247_000),
     ("051910", "LG화학", "화학", 318_000),
 )
@@ -75,20 +75,20 @@ RANDOM_NEWS_SCENARIOS = (
         "중국 주요 완성차 업체들이 현지 딜러 계약을 늘리고 있다. 중저가 전기차 시장의 경쟁 구도가 달라질 수 있다는 분석이다.",
     ),
     (
-        ("035420", "035720"), "negative", "광고 예산, 포털에서 숏폼으로 이동하는 흐름",
-        "소비재 기업들의 신규 광고 집행이 짧은 영상 플랫폼에 집중되고 있다. 검색과 메신저 광고의 성장 속도는 다소 둔화됐다.",
+        ("035420", "105560"), "negative", "내수 경기 둔화, 소비와 금융 수요 동반 위축",
+        "소비 심리가 약해지면서 온라인 거래와 가계 금융상품 수요가 함께 둔화될 수 있다는 전망이 나왔다.",
     ),
     (
-        ("035420", "035720"), "positive", "국내 온라인 쇼핑 거래액 예상치 상회",
-        "최근 온라인 쇼핑과 간편결제 거래가 함께 늘었다. 플랫폼 내 광고와 커머스 거래 활성화 여부가 주목된다.",
+        ("035420", "105560"), "positive", "국내 소비심리 회복, 온라인 거래와 카드 이용 증가",
+        "온라인 쇼핑 거래액과 카드 승인액이 함께 늘면서 플랫폼 거래와 금융 수수료 수익 개선 기대가 커지고 있다.",
     ),
     (
         ("035420",), "negative", "생성형 검색 서비스 이용 시간 빠르게 증가",
         "사용자가 기존 검색 포털 대신 대화형 검색으로 정보를 찾는 비중이 늘고 있다. 검색 광고 시장에도 변화가 예상된다.",
     ),
     (
-        ("035720",), "positive", "모바일 콘텐츠 결제액 두 달 연속 증가",
-        "웹툰과 음악 등 모바일 콘텐츠 소비가 회복되는 흐름이다. 플랫폼 내 유료 서비스 이용률도 완만하게 높아졌다.",
+        ("105560",), "positive", "KB금융, 주주환원 확대 계획 발표",
+        "자사주 매입과 소각을 포함한 추가 주주환원 계획이 발표되며 자본 효율성과 배당 확대 기대가 높아졌다.",
     ),
     (
         ("051910",), "negative", "리튬 가격 반등, 배터리 원가 변수로 부상",
@@ -107,8 +107,8 @@ RANDOM_NEWS_SCENARIOS = (
         "원화 약세가 이어지면서 해외 매출의 원화 환산 효과가 커지고 있다. 다만 수입 원가 부담도 함께 확인할 필요가 있다.",
     ),
     (
-        ("035420", "035720"), "negative", "미국 장기금리 상승세 재개",
-        "글로벌 성장주의 할인율 부담이 다시 커지고 있다. 국내 인터넷 업종의 투자 심리에도 간접적인 영향이 예상된다.",
+        ("005380", "051910"), "negative", "글로벌 전기차 수요 전망 하향",
+        "주요 시장의 전기차 판매 전망이 낮아지며 완성차와 배터리 소재 업종의 단기 수요 우려가 커지고 있다.",
     ),
     (
         ("005930",), "positive", "삼성전자, 글로벌 반도체 기업과 파운드리 공급 계약",
@@ -131,8 +131,8 @@ RANDOM_NEWS_SCENARIOS = (
         "중소형 광고주의 집행이 늘고 주요 검색어 광고 단가도 회복되면서 광고 매출 개선 가능성이 제기됐다.",
     ),
     (
-        ("035720",), "negative", "플랫폼 수수료 규제 논의 본격화",
-        "플랫폼 입점업체 보호를 위한 수수료 상한 논의가 시작되며 커머스와 결제 사업의 수익성 우려가 커졌다.",
+        ("105560",), "negative", "가계대출 연체율 상승, 충당금 부담 확대 우려",
+        "취약 차주의 연체율이 오르면서 대손충당금 적립과 은행 수익성에 대한 우려가 확대됐다.",
     ),
     (
         ("005380",), "negative", "완성차 생산라인 부분 파업 예고",
@@ -349,6 +349,30 @@ class MarketEngine:
                         "UPDATE news SET ticker = NULL WHERE ticker = ?", ("000660",)
                     )
                     conn.execute("DELETE FROM market_state WHERE ticker = ?", ("000660",))
+                legacy_kakao = conn.execute(
+                    "SELECT price FROM market_state WHERE ticker = ?", ("035720",)
+                ).fetchone()
+                if legacy_kakao:
+                    legacy_price = max(1, int(legacy_kakao[0]))
+                    conn.execute(
+                        """UPDATE positions SET ticker = ?, avg_price = avg_price * ? / ?
+                           WHERE ticker = ?""",
+                        ("105560", 84_000, legacy_price, "035720"),
+                    )
+                    conn.execute(
+                        "UPDATE trades SET ticker = ? WHERE ticker = ?",
+                        ("105560", "035720"),
+                    )
+                    conn.execute("DELETE FROM price_history WHERE ticker = ?", ("035720",))
+                    conn.execute(
+                        "UPDATE news SET ticker = ? WHERE ticker = ?",
+                        ("105560", "035720"),
+                    )
+                    conn.execute(
+                        "UPDATE news SET target_tickers = REPLACE(target_tickers, ?, ?)",
+                        (json.dumps("035720"), json.dumps("105560")),
+                    )
+                    conn.execute("DELETE FROM market_state WHERE ticker = ?", ("035720",))
                 now = time.time()
                 for ticker, name, sector, price in STOCKS:
                     conn.execute(
@@ -793,7 +817,7 @@ class MarketEngine:
 
     def order(self, user_id: str, ticker: str, side: str, quantity: int) -> dict:
         self._validate_user_id(user_id)
-        if side not in {"buy", "sell"} or quantity < 1 or quantity > 1_000_000:
+        if side not in {"buy", "sell"} or quantity < 1:
             raise MarketError(422, "주문 값이 올바르지 않습니다.")
         now = time.time()
         with self._connect() as conn:
