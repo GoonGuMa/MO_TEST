@@ -311,11 +311,13 @@ function renderChart() {
   const slot = plotWidth / Math.max(1, candles.length);
   const x = (index) => margin.left + slot * index + slot / 2;
   const y = (price) => margin.top + (max - price) / (max - min) * plotHeight;
-  const maxCandleWidth = candles.length <= 10 ? 34
-    : candles.length <= 20 ? 20
-      : candles.length <= 30 ? 15 : 9;
-  const bodyWidth = Math.max(3, Math.min(maxCandleWidth, slot * .62));
-  const volumeWidth = Math.max(3, Math.min(maxCandleWidth, slot * .68));
+  const maxCandleWidth = candles.length <= 5 ? 52
+    : candles.length <= 8 ? 42
+      : candles.length <= 12 ? 32
+    : candles.length <= 20 ? 22
+      : candles.length <= 30 ? 16 : 10;
+  const bodyWidth = Math.max(3, Math.min(maxCandleWidth, slot * .72));
+  const volumeWidth = Math.max(3, Math.min(maxCandleWidth, slot * .78));
 
   const horizontalGrid = Array.from({ length: 6 }, (_, index) => {
     const ratio = index / 5;
@@ -468,8 +470,16 @@ function renderRecentNews() {
 
 function renderTables() {
   const positions = state.data.portfolio.positions;
+  const totalCost = positions.reduce((sum, position) => sum + Number(position.avg_price) * Number(position.quantity), 0);
+  const totalProfit = positions.reduce((sum, position) => sum + Number(position.profit), 0);
+  const totalReturn = totalCost ? totalProfit / totalCost * 100 : 0;
+  document.getElementById("positions-total-value").textContent = won.format(state.data.portfolio.stock_value);
+  document.getElementById("positions-total-return").textContent = signedPercent(totalReturn);
+  document.getElementById("positions-total-return").className = directionClass(totalReturn);
+  document.getElementById("positions-total-profit").textContent = "평가손익 " + won.format(totalProfit);
+  document.getElementById("positions-total-profit").className = directionClass(totalProfit);
   $('#positions').innerHTML = positions.length ? positions.map((position) => `
-    <tr><td><strong>${escapeHtml(position.name)}</strong><small>${position.ticker}</small></td>
+    <tr data-ticker="${position.ticker}" class="${position.ticker === state.ticker ? 'selected' : ''}" role="button" tabindex="0" aria-label="${escapeHtml(position.name)} 종목 선택"><td><strong>${escapeHtml(position.name)}</strong><small>${position.ticker}</small></td>
       <td>${integer.format(position.quantity)}주</td><td>${integer.format(Math.round(position.avg_price))}원</td>
       <td>${integer.format(position.price)}원</td><td>${won.format(position.market_value)}</td><td><strong class="${directionClass(position.profit_pct)}">${signedPercent(position.profit_pct)}</strong><small>${won.format(position.profit)}</small></td></tr>`).join('')
     : '<tr><td colspan="6" class="empty">보유 종목이 없습니다.</td></tr>';
@@ -503,21 +513,47 @@ function render() {
 
 async function refresh({ silent = false } = {}) {
   if (state.refreshing) return;
+  const requestedTicker = state.ticker;
   state.refreshing = true;
   $('#refresh').classList.add('spinning');
   try {
     const query = new URLSearchParams({ ticker: state.ticker });
-    state.data = await api(`/api/market/snapshot?${query}`);
-    state.ticker = state.data.selected_ticker;
-    state.countdownEnd = Date.now() + state.data.next_tick_in_seconds * 1000;
-    render();
+    const data = await api(`/api/market/snapshot?${query}`);
+    if (state.ticker === requestedTicker) {
+      state.data = data;
+      state.ticker = data.selected_ticker;
+      state.countdownEnd = Date.now() + data.next_tick_in_seconds * 1000;
+      render();
+    }
   } catch (error) {
     state.countdownEnd = Date.now() + 5000;
     if (!silent) toast(error.message, 'error');
   } finally {
     state.refreshing = false;
     $('#refresh').classList.remove('spinning');
+    if (state.ticker !== requestedTicker) refresh({ silent: true });
   }
+}
+
+function selectTicker(ticker) {
+  if (!ticker || ticker === state.ticker) return;
+  state.ticker = ticker;
+  if (state.data) {
+    renderStocks();
+    renderTables();
+  }
+  refresh();
+}
+
+function selectTickerFromRow(event) {
+  const row = event.target.closest('tr[data-ticker]');
+  if (row) selectTicker(row.dataset.ticker);
+}
+
+function selectTickerFromRowWithKeyboard(event) {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  event.preventDefault();
+  selectTickerFromRow(event);
 }
 
 function updateEstimate() {
@@ -565,12 +601,9 @@ $('#chart-point-limit').addEventListener('change', (event) => {
   if (state.data) renderChart();
 });
 
-$('#stock-list').addEventListener('click', (event) => {
-  const row = event.target.closest('tr[data-ticker]');
-  if (!row || row.dataset.ticker === state.ticker) return;
-  state.ticker = row.dataset.ticker;
-  refresh();
-});
+$("#stock-list").addEventListener("click", selectTickerFromRow);
+$("#positions").addEventListener("click", selectTickerFromRow);
+$("#positions").addEventListener("keydown", selectTickerFromRowWithKeyboard);
 
 $('#refresh').addEventListener('click', () => refresh());
 $('#quantity').addEventListener('input', updateEstimate);

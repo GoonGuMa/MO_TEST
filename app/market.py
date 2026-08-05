@@ -33,7 +33,7 @@ USERNAME_PATTERN = re.compile(r"^[0-9A-Za-z가-힣_-]+$")
 
 STOCKS = (
     ("005930", "삼성전자", "반도체", 84_000),
-    ("000660", "SK하이닉스", "반도체", 218_000),
+    ("000100", "유한양행", "제약", 120_000),
     ("035420", "NAVER", "인터넷", 192_000),
     ("035720", "카카오", "인터넷", 46_500),
     ("005380", "현대차", "자동차", 247_000),
@@ -42,11 +42,11 @@ STOCKS = (
 
 RANDOM_NEWS_SCENARIOS = (
     (
-        ("005930", "000660"), "negative", "글로벌 메모리 시장 전망, 보수적 시각 늘어",
+        ("005930",), "negative", "글로벌 메모리 시장 전망, 보수적 시각 늘어",
         "주요 조사기관들이 PC와 모바일 수요 회복 시점을 늦춰 잡고 있다. 현물 가격도 최근 좁은 범위에서 약세를 보였다.",
     ),
     (
-        ("005930", "000660"), "positive", "북미 클라우드 업체, AI 서버 투자 일정 앞당겨",
+        ("005930",), "positive", "북미 클라우드 업체, AI 서버 투자 일정 앞당겨",
         "일부 대형 클라우드 사업자가 하반기 서버 발주를 예정보다 일찍 시작했다. 고대역폭 메모리 수요에도 영향을 줄 수 있다.",
     ),
     (
@@ -54,8 +54,12 @@ RANDOM_NEWS_SCENARIOS = (
         "경쟁사의 선단 공정 증설 계획이 구체화됐다. 글로벌 대형 고객사를 둘러싼 수주 경쟁이 한층 거세질 전망이다.",
     ),
     (
-        ("000660",), "negative", "미국 메모리 업체, 차세대 HBM 인증 진전",
-        "경쟁사가 주요 고객사의 품질 검증 단계에서 진전을 보인 것으로 전해졌다. 공급사 다변화 가능성이 시장의 관심을 받고 있다.",
+        ("000100",), "positive", "유한양행, 신약 기술수출 계약 확대 기대",
+        "후속 임상과 허가 절차가 진전되면서 단계별 기술료와 해외 판매 수익에 대한 기대가 커지고 있다.",
+    ),
+    (
+        ("000100",), "negative", "신약 후보물질 임상 일정 일부 지연",
+        "시험 대상자 모집과 데이터 검토에 예상보다 시간이 걸리면서 주요 임상 결과 발표 일정이 늦춰질 가능성이 제기됐다.",
     ),
     (
         ("005380",), "negative", "테슬라, 분기 영업이익 시장 예상 웃돌아",
@@ -263,6 +267,25 @@ class MarketEngine:
                            applied_at = published_at
                            WHERE effective_at IS NULL OR applied_at IS NULL"""
                     )
+                legacy_stock = conn.execute(
+                    "SELECT price FROM market_state WHERE ticker = ?", ("000660",)
+                ).fetchone()
+                if legacy_stock:
+                    legacy_price = max(1, int(legacy_stock[0]))
+                    conn.execute(
+                        """UPDATE positions SET ticker = ?, avg_price = avg_price * ? / ?
+                           WHERE ticker = ?""",
+                        ("000100", 120_000, legacy_price, "000660"),
+                    )
+                    conn.execute(
+                        "UPDATE trades SET ticker = ? WHERE ticker = ?",
+                        ("000100", "000660"),
+                    )
+                    conn.execute("DELETE FROM price_history WHERE ticker = ?", ("000660",))
+                    conn.execute(
+                        "UPDATE news SET ticker = NULL WHERE ticker = ?", ("000660",)
+                    )
+                    conn.execute("DELETE FROM market_state WHERE ticker = ?", ("000660",))
                 now = time.time()
                 for ticker, name, sector, price in STOCKS:
                     conn.execute(

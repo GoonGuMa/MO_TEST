@@ -255,7 +255,7 @@ def test_randomize_market_resets_quotes_near_baselines_and_keeps_positions(marke
     assert response.status_code == 200
     after = snapshot(app, cookies=cookies)
     assert after["news"] == []
-    baselines = {"005930": 84_000, "000660": 218_000, "035420": 192_000,
+    baselines = {"005930": 84_000, "000100": 120_000, "035420": 192_000,
                  "035720": 46_500, "005380": 247_000, "051910": 318_000}
     for item in after["stocks"]:
         assert baselines[item["ticker"]] * .85 <= item["price"] <= baselines[item["ticker"]] * 1.15

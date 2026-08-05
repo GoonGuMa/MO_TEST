@@ -318,6 +318,16 @@ button:disabled { opacity: .52; cursor: wait; }
 
 .portfolio-grid { grid-template-columns: 1.1fr .9fr; }
 .portfolio-grid .data-table td { height: 51px; }
+#positions tr[data-ticker] { cursor: pointer; transition: background .12s; }
+#positions tr[data-ticker]:hover { background: #f7faff; }
+#positions tr[data-ticker].selected { background: #eef5ff; box-shadow: inset 3px 0 var(--blue); }
+#positions tr[data-ticker]:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.portfolio-total { background: #f8faff; }
+.portfolio-total th, .portfolio-total td { height: 64px; padding: 10px 15px; border-top: 2px solid #dce5f2; }
+.portfolio-total th { color: var(--navy); font-size: 11px; text-align: left; }
+.portfolio-total td { text-align: right; white-space: nowrap; }
+.portfolio-total td strong { display: block; color: var(--navy); font-size: 13px; font-variant-numeric: tabular-nums; }
+.portfolio-total td small { display: block; margin-top: 4px; color: #929baa; font-size: 9px; }
 .side-label { display: inline-block; min-width: 34px; padding: 4px 6px; border-radius: 4px; text-align: center; font-size: 9px; font-weight: 800; }
 .side-label.buy { background: var(--red-soft); color: var(--red); }
 .side-label.sell { background: var(--blue-soft); color: var(--blue); }
