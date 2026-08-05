@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import random
 import re
 import secrets
@@ -102,12 +103,64 @@ RANDOM_NEWS_SCENARIOS = (
         "일부 경쟁 업체가 당국 점검으로 생산량을 줄인 것으로 알려졌다. 단기 공급 물량과 제품 가격에 영향을 줄 가능성이 있다.",
     ),
     (
-        ("005930", "005380"), "positive", "원·달러 환율, 수출기업에 유리한 구간 진입",
+        ("005930", "005380", "051910"), "positive", "원·달러 환율, 수출기업에 유리한 구간 진입",
         "원화 약세가 이어지면서 해외 매출의 원화 환산 효과가 커지고 있다. 다만 수입 원가 부담도 함께 확인할 필요가 있다.",
     ),
     (
         ("035420", "035720"), "negative", "미국 장기금리 상승세 재개",
         "글로벌 성장주의 할인율 부담이 다시 커지고 있다. 국내 인터넷 업종의 투자 심리에도 간접적인 영향이 예상된다.",
+    ),
+    (
+        ("005930",), "positive", "삼성전자, 글로벌 반도체 기업과 파운드리 공급 계약",
+        "첨단 공정 기반의 장기 공급 계약이 체결됐다는 소식에 파운드리 가동률과 수익성 개선 기대가 높아지고 있다.",
+    ),
+    (
+        ("005930",), "negative", "스마트폰 부품 품질 점검 확대, 출하 일정 변수",
+        "일부 부품의 추가 품질 검사가 진행되면서 신제품 출하 일정과 관련 비용에 대한 불확실성이 커졌다.",
+    ),
+    (
+        ("000100",), "positive", "유한양행 신약, 미국 우선심사 대상 지정",
+        "주요 신약 후보가 우선심사 대상으로 지정되며 허가 일정 단축과 해외 시장 진출에 대한 기대가 높아졌다.",
+    ),
+    (
+        ("000100",), "negative", "핵심 의약품 특허 분쟁 장기화 가능성",
+        "해외 제약사와의 특허 분쟁에서 추가 심리가 결정되며 법률 비용과 출시 일정의 불확실성이 확대됐다.",
+    ),
+    (
+        ("035420",), "positive", "검색 광고 단가 회복, 신규 광고주 유입 증가",
+        "중소형 광고주의 집행이 늘고 주요 검색어 광고 단가도 회복되면서 광고 매출 개선 가능성이 제기됐다.",
+    ),
+    (
+        ("035720",), "negative", "플랫폼 수수료 규제 논의 본격화",
+        "플랫폼 입점업체 보호를 위한 수수료 상한 논의가 시작되며 커머스와 결제 사업의 수익성 우려가 커졌다.",
+    ),
+    (
+        ("005380",), "negative", "완성차 생산라인 부분 파업 예고",
+        "노사 협상 결렬로 일부 생산라인의 부분 파업이 예고되면서 단기 생산 차질 가능성이 부각됐다.",
+    ),
+    (
+        ("005380",), "positive", "북미 전기차 공장, 현지 보조금 요건 충족",
+        "현지 생산 비율과 배터리 조달 기준을 충족하며 북미 판매 차량의 세액공제 적용 기대가 높아졌다.",
+    ),
+    (
+        ("051910",), "positive", "LG화학, 유럽 완성차 업체와 양극재 장기 공급 계약",
+        "대규모 장기 공급 계약으로 배터리 소재 부문의 수주 잔고와 공장 가동률 개선이 기대된다.",
+    ),
+    (
+        ("051910",), "negative", "국제유가 급등, 석유화학 원가 부담 확대",
+        "나프타를 비롯한 주요 원재료 가격이 상승하면서 석유화학 제품의 스프레드 축소 우려가 커지고 있다.",
+    ),
+    (
+        ("000100", "051910"), "positive", "정부, 바이오·신약 연구개발 세액공제 확대",
+        "신약과 바이오 소재 연구개발에 대한 세제 지원 확대안이 발표되며 관련 기업의 투자 부담 완화가 기대된다.",
+    ),
+    (
+        ("005380", "051910"), "positive", "주요국, 전기차 구매 보조금 확대 합의",
+        "전기차 수요 회복을 위해 구매 지원을 늘리기로 하면서 완성차와 배터리 소재 업종의 동반 수혜가 예상된다.",
+    ),
+    (
+        ("005930", "005380", "051910"), "negative", "글로벌 해상운임 급등, 수출기업 물류비 부담",
+        "주요 항로의 운임과 보험료가 동시에 상승하면서 해외 매출 비중이 높은 제조업체의 비용 부담이 커지고 있다.",
     ),
 )
 
@@ -215,6 +268,16 @@ class MarketEngine:
                     CREATE INDEX IF NOT EXISTS idx_sessions_user_id
                         ON sessions(user_id);
                     """
+                )
+                news_columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(news)").fetchall()
+                }
+                if "target_tickers" not in news_columns:
+                    conn.execute("ALTER TABLE news ADD COLUMN target_tickers TEXT")
+                conn.execute(
+                    """UPDATE news SET target_tickers =
+                       CASE WHEN ticker IS NULL THEN '[]' ELSE json_array(ticker) END
+                       WHERE target_tickers IS NULL"""
                 )
                 history_columns = {
                     row[1] for row in conn.execute("PRAGMA table_info(price_history)").fetchall()
@@ -376,10 +439,15 @@ class MarketEngine:
         return buy_volume, sell_volume, change
 
     def _apply_news_event(self, conn: sqlite3.Connection, event: sqlite3.Row, now: float) -> None:
-        targets = conn.execute(
-            "SELECT ticker, price FROM market_state" + (" WHERE ticker = ?" if event["ticker"] else ""),
-            (event["ticker"],) if event["ticker"] else (),
-        ).fetchall()
+        target_tickers = json.loads(event["target_tickers"] or "[]")
+        if target_tickers:
+            placeholders = ",".join("?" for _ in target_tickers)
+            targets = conn.execute(
+                f"SELECT ticker, price FROM market_state WHERE ticker IN ({placeholders})",
+                target_tickers,
+            ).fetchall()
+        else:
+            targets = conn.execute("SELECT ticker, price FROM market_state").fetchall()
         for target in targets:
             old_price = int(target["price"])
             buy_volume, sell_volume, requested_change = self._virtual_flow(
@@ -415,20 +483,19 @@ class MarketEngine:
         tickers, sentiment, title, content = self.rng.choice(
             RANDOM_NEWS_SCENARIOS
         )
-        ticker = self.rng.choice(tickers)
+        ticker = tickers[0]
         magnitude = self.rng.uniform(
             RANDOM_NEWS_CHANGE_MIN, RANDOM_NEWS_CHANGE_MAX
         )
         signed_impact = magnitude if sentiment == "positive" else -magnitude
         conn.execute(
             """INSERT INTO news
-               (title, content, sentiment, ticker, impact_pct, published_at,
+               (title, content, sentiment, ticker, target_tickers, impact_pct, published_at,
                 effective_at, applied_at, source)
-               VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'random')""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'random')""",
             (
-                title, content,
-                sentiment, ticker, round(signed_impact, 2), now,
-                now + NEWS_EFFECT_DELAY_SECONDS,
+                title, content, sentiment, ticker, json.dumps(tickers),
+                round(signed_impact, 2), now, now + NEWS_EFFECT_DELAY_SECONDS,
             ),
         )
         conn.execute(
@@ -454,7 +521,7 @@ class MarketEngine:
             for index in range(tick_count)
         ]
         due_news = conn.execute(
-            """SELECT id, ticker, impact_pct, effective_at FROM news
+            """SELECT id, ticker, target_tickers, impact_pct, effective_at FROM news
                WHERE applied_at IS NULL AND effective_at <= ?
                ORDER BY effective_at, id""",
             (now,),
@@ -677,9 +744,10 @@ class MarketEngine:
                    LEFT JOIN market_state m ON m.ticker = n.ticker
                    ORDER BY n.id DESC LIMIT 30"""
             ).fetchall()
+            stock_names = {row["ticker"]: row["name"] for row in stocks}
             trades = conn.execute(
                 """SELECT t.*, m.name FROM trades t JOIN market_state m ON m.ticker = t.ticker
-                   WHERE t.user_id = ? ORDER BY t.id DESC LIMIT 20""", (user_id,)
+                   WHERE t.user_id = ? ORDER BY t.id DESC""", (user_id,)
             ).fetchall()
             portfolio = self._portfolio(conn, user_id)
             conn.commit()
@@ -706,7 +774,11 @@ class MarketEngine:
             "news": [{
                 "id": row["id"], "title": row["title"], "content": row["content"],
                 "sentiment": row["sentiment"], "ticker": row["ticker"],
-                "stock_name": row["stock_name"] or "전체 시장",
+                "affected_tickers": json.loads(row["target_tickers"] or "[]"),
+                "stock_name": (
+                    ", ".join(stock_names.get(code, code) for code in json.loads(row["target_tickers"] or "[]"))
+                    or "전체 시장"
+                ),
                 "impact_pct": row["impact_pct"], "published_at": _iso(row["published_at"]),
                 "effective_at": _iso(row["effective_at"]),
                 "applied_at": _iso(row["applied_at"]) if row["applied_at"] else None,
@@ -800,11 +872,12 @@ class MarketEngine:
                 raise MarketError(404, "존재하지 않는 종목입니다.")
             cursor = conn.execute(
                 """INSERT INTO news
-                   (title, content, sentiment, ticker, impact_pct, published_at,
+                   (title, content, sentiment, ticker, target_tickers, impact_pct, published_at,
                     effective_at, applied_at, source)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'manual')""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'manual')""",
                 (
                     title.strip(), content.strip(), sentiment, ticker,
+                    json.dumps([row["ticker"] for row in targets]) if ticker else "[]",
                     round(signed_impact, 2), now, effective_at,
                 ),
             )

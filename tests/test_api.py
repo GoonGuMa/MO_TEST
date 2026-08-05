@@ -15,6 +15,8 @@ from app.market import (
     RANDOM_NEWS_CHANGE_MIN,
     RANDOM_NEWS_INTERVAL_MAX,
     RANDOM_NEWS_INTERVAL_MIN,
+    RANDOM_NEWS_SCENARIOS,
+    STOCKS,
 )
 
 
@@ -121,6 +123,21 @@ def test_positive_news_applies_twenty_percent_to_selected_stock(market_app):
     assert news_flow["volume"] == news_flow["buy_volume"] + news_flow["sell_volume"]
     assert news_flow["buy_volume"] > news_flow["sell_volume"]
     assert stock(snapshot(app))["price"] == stock(after)["price"]
+
+
+
+def test_random_news_catalog_has_requested_size_and_valid_targets():
+    valid_tickers = {ticker for ticker, _name, _sector, _price in STOCKS}
+    assert len(RANDOM_NEWS_SCENARIOS) == 30
+    assert sum(len(tickers) >= 2 for tickers, *_rest in RANDOM_NEWS_SCENARIOS) == 7
+    for tickers, sentiment, title, content in RANDOM_NEWS_SCENARIOS:
+        assert tickers
+        assert set(tickers) <= valid_tickers
+        assert len(tickers) == len(set(tickers))
+        assert sentiment in {"positive", "negative"}
+        assert title.strip()
+        assert content.strip()
+
 
 
 def test_random_news_uses_its_own_schedule_and_impact_range(market_app):
@@ -236,6 +253,37 @@ def test_sell_all_closes_every_position_at_current_prices(market_app):
     assert result["portfolio"]["positions"] == []
     assert result["portfolio"]["cash"] == 100_000_000
     assert request(app, "POST", "/api/market/accounts/sell-all", cookies=cookies).status_code == 400
+
+
+
+def test_news_with_multiple_targets_moves_every_target(market_app):
+    app, database = market_app
+    before = snapshot(app)
+    now = time.time()
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            """INSERT INTO news
+               (title, content, sentiment, ticker, target_tickers, impact_pct,
+                published_at, effective_at, applied_at, source)
+               VALUES (?, ?, 'positive', ?, ?, 8.0, ?, ?, NULL, 'random')""",
+            (
+                "원·달러 환율, 수출기업에 유리한 구간 진입",
+                "수출 비중이 높은 여러 기업에 긍정적인 환경이다.",
+                "005930",
+                '["005930", "005380", "051910"]',
+                now - 61,
+                now - 1,
+            ),
+        )
+        conn.commit()
+
+    after = snapshot(app)
+    event = after["news"][0]
+    assert event["affected_tickers"] == ["005930", "005380", "051910"]
+    assert event["stock_name"] == "삼성전자, 현대차, LG화학"
+    for ticker in event["affected_tickers"]:
+        assert stock(after, ticker)["price"] > stock(before, ticker)["price"]
+
 
 
 def test_randomize_market_resets_quotes_near_baselines_and_keeps_positions(market_app):

@@ -15,6 +15,7 @@ const state = {
   marketRandomizeUnlocked: false,
   randomNewsInitialized: false,
   lastRandomNewsId: 0,
+  positionSort: { key: null, direction: 'asc' },
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -195,7 +196,7 @@ function showNewsPopup(item) {
   clearTimeout(hideNewsPopup.timer);
   $('#random-news-stock').textContent = item.applied_at
     ? (item.stock_name || '전체 시장')
-    : '영향 종목 비공개';
+    : `영향 종목 ${item.affected_tickers?.length || '전체'}개 · 반영 후 공개`;
   $('#random-news-time').textContent = formatTime(item.published_at);
   const status = $('#random-news-status');
   status.textContent = item.applied_at ? '가격 반영 완료' : '가격 반영 예정';
@@ -478,7 +479,26 @@ function renderTables() {
   document.getElementById("positions-total-return").className = directionClass(totalReturn);
   document.getElementById("positions-total-profit").textContent = "평가손익 " + won.format(totalProfit);
   document.getElementById("positions-total-profit").className = directionClass(totalProfit);
-  $('#positions').innerHTML = positions.length ? positions.map((position) => `
+  const { key: sortKey, direction: sortDirection } = state.positionSort;
+  const sortedPositions = [...positions].sort((left, right) => {
+    if (!sortKey) return 0;
+    const comparison = sortKey === 'name'
+      ? String(left[sortKey]).localeCompare(String(right[sortKey]), 'ko-KR')
+      : Number(left[sortKey]) - Number(right[sortKey]);
+    return sortDirection === 'asc' ? comparison : -comparison;
+  });
+  document.querySelectorAll('#positions-table .sort-button').forEach((button) => {
+    const active = button.dataset.sortKey === sortKey;
+    button.classList.toggle('active', active);
+    button.querySelector('span').textContent = active
+      ? (sortDirection === 'asc' ? '↑' : '↓')
+      : '↕';
+    button.closest('th').setAttribute(
+      'aria-sort',
+      active ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none',
+    );
+  });
+  $('#positions').innerHTML = sortedPositions.length ? sortedPositions.map((position) => `
     <tr data-ticker="${position.ticker}" class="${position.ticker === state.ticker ? 'selected' : ''}" role="button" tabindex="0" aria-label="${escapeHtml(position.name)} 종목 선택"><td><strong>${escapeHtml(position.name)}</strong><small>${position.ticker}</small></td>
       <td>${integer.format(position.quantity)}주</td><td>${integer.format(Math.round(position.avg_price))}원</td>
       <td>${integer.format(position.price)}원</td><td>${won.format(position.market_value)}</td><td><strong class="${directionClass(position.profit_pct)}">${signedPercent(position.profit_pct)}</strong><small>${won.format(position.profit)}</small></td></tr>`).join('')
@@ -490,6 +510,32 @@ function renderTables() {
       <td><span class="side-label ${trade.side}">${trade.side === 'buy' ? '매수' : '매도'}</span></td>
       <td>${integer.format(trade.quantity)}주</td><td>${integer.format(trade.price)}원</td></tr>`).join('')
     : '<tr><td colspan="5" class="empty">거래 내역이 없습니다.</td></tr>';
+}
+
+
+function renderTradeHistory() {
+  const trades = state.data.trades || [];
+  const buys = trades.filter((trade) => trade.side === 'buy');
+  const sells = trades.filter((trade) => trade.side === 'sell');
+  const buyTotal = buys.reduce((sum, trade) => sum + Number(trade.total), 0);
+  const sellTotal = sells.reduce((sum, trade) => sum + Number(trade.total), 0);
+  $('#history-trade-count').textContent = `${integer.format(trades.length)}건`;
+  $('#history-buy-total').textContent = won.format(buyTotal);
+  $('#history-sell-total').textContent = won.format(sellTotal);
+  $('#history-buy-count').textContent = `매수 ${integer.format(buys.length)}건`;
+  $('#history-sell-count').textContent = `매도 ${integer.format(sells.length)}건`;
+  $('#history-table-count').textContent = `총 ${integer.format(trades.length)}건`;
+  $('#trade-history').innerHTML = trades.length ? trades.map((trade) => `
+    <tr>
+      <td><time>${formatTime(trade.executed_at)}</time></td>
+      <td><span class="side-label ${trade.side}">${trade.side === 'buy' ? '매수' : '매도'}</span></td>
+      <td><strong>${escapeHtml(trade.name)}</strong></td>
+      <td><span class="ticker-code">${trade.ticker}</span></td>
+      <td>${integer.format(trade.quantity)}주</td>
+      <td>${integer.format(trade.price)}원</td>
+      <td><strong class="trade-total">${won.format(trade.total)}</strong></td>
+    </tr>`).join('')
+    : '<tr><td colspan="7" class="empty">거래 내역이 없습니다.</td></tr>';
 }
 
 function renderStockOptions() {
@@ -508,6 +554,7 @@ function render() {
   renderNews();
   renderRecentNews();
   renderTables();
+  renderTradeHistory();
   renderStockOptions();
 }
 
@@ -584,7 +631,7 @@ function setMenuOpen(open) {
 }
 
 function setView(view, { updateHash = true } = {}) {
-  const activeView = view === 'news' ? 'news' : 'trading';
+  const activeView = ['trading', 'news', 'trades'].includes(view) ? view : 'trading';
   document.querySelectorAll('.app-view').forEach((element) => {
     element.hidden = element.dataset.view !== activeView;
   });
@@ -604,6 +651,18 @@ $('#chart-point-limit').addEventListener('change', (event) => {
 $("#stock-list").addEventListener("click", selectTickerFromRow);
 $("#positions").addEventListener("click", selectTickerFromRow);
 $("#positions").addEventListener("keydown", selectTickerFromRowWithKeyboard);
+$('#positions-table thead').addEventListener('click', (event) => {
+  const button = event.target.closest('.sort-button');
+  if (!button) return;
+  const key = button.dataset.sortKey;
+  state.positionSort = {
+    key,
+    direction: state.positionSort.key === key && state.positionSort.direction === 'asc'
+      ? 'desc'
+      : 'asc',
+  };
+  renderTables();
+});
 
 $('#refresh').addEventListener('click', () => refresh());
 $('#quantity').addEventListener('input', updateEstimate);
@@ -664,6 +723,7 @@ $('#recent-news-list').addEventListener('keydown', openSelectedNewsWithKeyboard)
 $('#news-list').addEventListener('click', openSelectedNews);
 $('#news-list').addEventListener('keydown', openSelectedNewsWithKeyboard);
 $('#recent-news-more').addEventListener('click', () => setView('news'));
+$('#trade-history-more').addEventListener('click', () => setView('trades'));
 
 document.querySelectorAll('[data-view-target]').forEach((button) => {
   button.addEventListener('click', () => setView(button.dataset.viewTarget));
@@ -688,7 +748,7 @@ document.addEventListener('keydown', (event) => {
 });
 
 window.addEventListener('hashchange', () => {
-  setView(location.hash === '#news' ? 'news' : 'trading', { updateHash: false });
+  setView(location.hash.slice(1), { updateHash: false });
 });
 
 $('#order-form').addEventListener('submit', async (event) => {
@@ -876,6 +936,6 @@ setInterval(() => {
   }
 }, 250);
 
-setView(location.hash === '#news' ? 'news' : 'trading', { updateHash: false });
+setView(location.hash.slice(1), { updateHash: false });
 syncMarketActionLock();
 initializeAuth();

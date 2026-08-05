@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="뉴스 이벤트로 움직이는 교육용 모의투자">
   <title>MARKET LAB — 뉴스 기반 모의투자</title>
-  <link rel="stylesheet" href="/styles.css?v=21">
+  <link rel="stylesheet" href="/styles.css?v=24">
 </head>
 <body>
   <header class="topbar">
@@ -32,6 +32,10 @@
           <button class="menu-item" type="button" data-view-target="news">
             <span class="menu-item-icon" aria-hidden="true">⚡</span>
             <span><strong>뉴스</strong><small>뉴스 발행 및 변동 관리</small></span>
+          </button>
+          <button class="menu-item" type="button" data-view-target="trades">
+            <span class="menu-item-icon" aria-hidden="true">≡</span>
+            <span><strong>내 거래내역</strong><small>전체 매수·매도 체결 내역</small></span>
           </button>
         </nav>
         <div class="drawer-foot"><strong>MARKET LAB</strong><span>교육용 가상 시장</span></div>
@@ -183,10 +187,10 @@
     <section class="content-grid portfolio-grid">
       <article class="panel">
         <header class="panel-head"><div><small>MY PORTFOLIO</small><h2>보유 종목</h2></div><button id="reset-account" class="text-button" type="button">계좌 초기화</button></header>
-        <div class="table-scroll"><table class="data-table"><thead><tr><th>종목</th><th>수량</th><th>평균단가</th><th>현재가</th><th>평가금액</th><th>수익률</th></tr></thead><tbody id="positions"></tbody><tfoot><tr class="portfolio-total"><th colspan="4">보유 종목 합계</th><td><strong id="positions-total-value">-</strong><small>총 평가금액</small></td><td><strong id="positions-total-return">-</strong><small id="positions-total-profit">-</small></td></tr></tfoot></table></div>
+        <div class="table-scroll"><table id="positions-table" class="data-table"><thead><tr><th><button class="sort-button" type="button" data-sort-key="name">종목<span aria-hidden="true">↕</span></button></th><th><button class="sort-button" type="button" data-sort-key="quantity">수량<span aria-hidden="true">↕</span></button></th><th><button class="sort-button" type="button" data-sort-key="avg_price">평균단가<span aria-hidden="true">↕</span></button></th><th><button class="sort-button" type="button" data-sort-key="price">현재가<span aria-hidden="true">↕</span></button></th><th><button class="sort-button" type="button" data-sort-key="market_value">평가금액<span aria-hidden="true">↕</span></button></th><th><button class="sort-button" type="button" data-sort-key="profit_pct">수익률<span aria-hidden="true">↕</span></button></th></tr></thead><tbody id="positions"></tbody><tfoot><tr class="portfolio-total"><th colspan="4">보유 종목 합계</th><td><strong id="positions-total-value">-</strong><small>총 평가금액</small></td><td><strong id="positions-total-return">-</strong><small id="positions-total-profit">-</small></td></tr></tfoot></table></div>
       </article>
       <article class="panel">
-        <header class="panel-head"><div><small>ORDER HISTORY</small><h2>최근 거래</h2></div></header>
+        <header class="panel-head"><div><small>ORDER HISTORY</small><h2>최근 거래</h2></div><button id="trade-history-more" class="history-link-button" type="button">내 거래내역 <span aria-hidden="true">→</span></button></header>
         <div class="table-scroll"><table class="data-table"><thead><tr><th>시간</th><th>종목</th><th>구분</th><th>수량</th><th>체결가</th></tr></thead><tbody id="trades"></tbody></table></div>
       </article>
     </section>
@@ -228,9 +232,36 @@
         </article>
       </section>
     </section>
+
+    <section id="view-trades" class="app-view" data-view="trades" hidden>
+      <section class="hero view-hero history-hero">
+        <div>
+          <div class="eyebrow"><span>ORDER HISTORY</span> 나의 투자 기록</div>
+          <h1>내 <em>거래내역</em></h1>
+          <p>지금까지 체결된 매수·매도 주문과 누적 거래금액을 한눈에 확인하세요.</p>
+        </div>
+      </section>
+      <section class="trade-summary-grid" aria-label="거래내역 요약">
+        <article><div class="stat-icon navy">#</div><div><span>전체 체결 건수</span><strong id="history-trade-count">0건</strong><small>매수·매도 전체</small></div></article>
+        <article><div class="stat-icon red">↗</div><div><span>누적 매수 금액</span><strong id="history-buy-total">₩0</strong><small id="history-buy-count">매수 0건</small></div></article>
+        <article><div class="stat-icon blue">↘</div><div><span>누적 매도 금액</span><strong id="history-sell-total">₩0</strong><small id="history-sell-count">매도 0건</small></div></article>
+      </section>
+      <section class="panel trade-history-panel">
+        <header class="panel-head">
+          <div><small>EXECUTION LOG</small><h2>전체 체결 내역</h2></div>
+          <span id="history-table-count" class="history-count-badge">총 0건</span>
+        </header>
+        <div class="table-scroll">
+          <table class="data-table trade-history-table">
+            <thead><tr><th>체결시간</th><th>구분</th><th>종목</th><th>종목코드</th><th>수량</th><th>체결가</th><th>거래금액</th></tr></thead>
+            <tbody id="trade-history"><tr><td colspan="7" class="empty">거래 내역이 없습니다.</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
   </main>
 
   <footer><strong>MARKET LAB</strong><span>교육용 가상 시장 · 실제 투자 및 실제 시세와 무관합니다.</span></footer>
-  <script type="module" src="/app.js?v=28"></script>
+  <script type="module" src="/app.js?v=32"></script>
 </body>
 </html>
