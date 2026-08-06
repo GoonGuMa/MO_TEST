@@ -25,12 +25,29 @@ python3 -m venv .venv
 브라우저에서 <http://localhost:8080>을 엽니다. API 문서는
 <http://localhost:8080/docs>에서 확인할 수 있습니다.
 
+## Docker로 실행
+
+Docker Hub 이미지를 내려받아 실행합니다. 회원 및 거래 데이터를 계속 보존하려면
+이름이 있는 볼륨을 `/app/data`에 연결하세요.
+
+```bash
+docker pull gogumaa/mo-test:0.2
+docker run --name motest -p 8080:8080 \
+  -v motest-data:/app/data \
+  -e MOCK_MARKET_ADMIN_KEY='원하는-비밀키' \
+  gogumaa/mo-test:0.2
+```
+
+브라우저에서 <http://localhost:8080>을 열고, 종료할 때는
+`docker stop motest`를 실행합니다. 운영자 키가 필요하지 않으면 `-e` 줄은 생략할 수
+있습니다.
+
 ## GitHub Codespaces에서 공유
 
 저장소의 **Code → Codespaces → Create codespace on main**을 선택하면 의존성 설치와
 서버 실행, 8080 포트 전달이 자동으로 진행됩니다.
 
-다른 사람에게 실행 중인 앱을 공유하려면 Codespace의 **PORTS** 탭에서 8000 포트를
+다른 사람에게 실행 중인 앱을 공유하려면 Codespace의 **PORTS** 탭에서 8080 포트를
 우클릭하고 **Port Visibility → Public**을 선택한 뒤 표시된 URL을 복사합니다.
 Codespace가 중지되면 앱도 중지되며, 재시작 후 포트 공개 설정을 다시 확인해야 합니다.
 
@@ -47,7 +64,7 @@ Codespace를 중지·재실행하거나 컨테이너를 Rebuild해도 `/workspac
 여러 학생에게 공개할 때는 환경변수를 설정하세요.
 
 ```bash
-MOCK_MARKET_ADMIN_KEY='원하는-비밀키' .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+MOCK_MARKET_ADMIN_KEY='원하는-비밀키' .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
 운영자 화면의 `운영자 키` 칸에 같은 값을 입력해야 뉴스가 발행됩니다.

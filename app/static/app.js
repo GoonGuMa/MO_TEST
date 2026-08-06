@@ -332,7 +332,7 @@ function renderChart() {
     return `<line class="vertical-grid-line" x1="${px}" y1="${margin.top}" x2="${px}" y2="${volumeBottom}" />`;
   }).join('');
   const newsBands = candles.map((candle, index) => candle.event_type === 'news'
-    ? `<rect class="news-band" x="${x(index) - slot / 2}" y="${margin.top}" width="${slot}" height="${volumeBottom - margin.top}" />`
+    ? `<rect class="news-band ${Number(candle.change_pct) >= 0 ? 'up' : 'down'}" x="${x(index) - slot / 2}" y="${margin.top}" width="${slot}" height="${volumeBottom - margin.top}" />`
     : '').join('');
   const candleShapes = candles.map((candle, index) => {
     const px = x(index);

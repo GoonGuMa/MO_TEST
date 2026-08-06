@@ -1,0 +1,13 @@
+.git
+.github
+.devcontainer
+.venv
+.pytest_cache
+__pycache__
+*.py[cod]
+*.sqlite3
+data
+tests
+.env
+.env.*
+start-server.txt

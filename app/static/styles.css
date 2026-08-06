@@ -211,7 +211,9 @@ button { cursor: pointer; }
 .grid-line { stroke: #e9edf3; stroke-width: 1; }
 .vertical-grid-line { stroke: #f0f3f7; stroke-width: 1; }
 .chart-label { fill: #8a94a5; font-size: 9px; }
-.news-band { fill: #bfdbfe; opacity: .42; }
+.news-band { opacity: .42; }
+.news-band.up { fill: #fecdd3; }
+.news-band.down { fill: #bfdbfe; }
 .candle-wick { stroke-width: 1.2; }
 .candle-wick.up { stroke: var(--red); }
 .candle-wick.down { stroke: var(--blue); }
