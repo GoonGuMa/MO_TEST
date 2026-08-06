@@ -2,10 +2,10 @@
 
 실제 주식 API 없이 운영되는 교육용 모의투자 웹앱입니다.
 
-- 모든 종목은 서버 기준으로 15초마다 `±0.1~7%` 변동
+- 모든 종목은 서버 기준으로 15초마다 랜덤거래량에 따라 '0~+-7%' 변동
 - 긍정 뉴스는 선택 종목 또는 전체 시장을 `+15~25%` 변동
 - 부정 뉴스는 선택 종목 또는 전체 시장을 `-15~25%` 변동
-- 3~5분마다 자동 뉴스가 조용히 발행되며 선택 종목을 `±7~10%` 변동
+- 3~5분마다 자동 뉴스가 발행되며 선택 종목을 `±7~10%` 변동
 - 모든 뉴스의 가격 영향은 발행 1분 후 반영
 - 사용자별 초기자금 1억원, 보유 종목과 거래 내역 SQLite 저장
 - 한글 아이디를 지원하는 회원가입·로그인과 사용자별 계좌 분리
@@ -19,16 +19,16 @@
 cd /home/goguma/mo_test
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+.venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 ```
 
-브라우저에서 <http://localhost:8000>을 엽니다. API 문서는
-<http://localhost:8000/docs>에서 확인할 수 있습니다.
+브라우저에서 <http://localhost:8080>을 엽니다. API 문서는
+<http://localhost:8080/docs>에서 확인할 수 있습니다.
 
 ## GitHub Codespaces에서 공유
 
 저장소의 **Code → Codespaces → Create codespace on main**을 선택하면 의존성 설치와
-서버 실행, 8000 포트 전달이 자동으로 진행됩니다.
+서버 실행, 8080 포트 전달이 자동으로 진행됩니다.
 
 다른 사람에게 실행 중인 앱을 공유하려면 Codespace의 **PORTS** 탭에서 8000 포트를
 우클릭하고 **Port Visibility → Public**을 선택한 뒤 표시된 URL을 복사합니다.
@@ -57,3 +57,9 @@ MOCK_MARKET_ADMIN_KEY='원하는-비밀키' .venv/bin/uvicorn app.main:app --hos
 ```bash
 .venv/bin/pytest -q
 ```
+
+## 뉴스발행
+
+현재 뉴스는 약 30가지가 랜덤로직으로 인해 발행되고 있습니다. 일정 키워드 변경과 타회사 언급 등을 통해
+특정 회사의 주가변동을 예측하여 투자할 수 있습니다.
+또한, 두 가지 이상의 종목에 영향을 끼치는 뉴스도 존재하니 재미있게 즐기실 수 있길 바랍니다.
