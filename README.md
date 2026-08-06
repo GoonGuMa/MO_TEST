@@ -31,11 +31,11 @@ Docker Hub 이미지를 내려받아 실행합니다. 회원 및 거래 데이�
 이름이 있는 볼륨을 `/app/data`에 연결하세요.
 
 ```bash
-docker pull gogumaa/mo-test:0.2
+docker pull gogumaa/mo-test:0.3
 docker run --name motest -p 8080:8080 \
   -v motest-data:/app/data \
   -e MOCK_MARKET_ADMIN_KEY='원하는-비밀키' \
-  gogumaa/mo-test:0.2
+  gogumaa/mo-test:0.3
 ```
 
 브라우저에서 <http://localhost:8080>을 열고, 종료할 때는

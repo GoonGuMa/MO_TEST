@@ -740,8 +740,14 @@ class MarketEngine:
                 (self._session_token_hash(token),),
             )
 
-    def snapshot(self, user_id: str, ticker: str = "005930") -> dict:
+    def snapshot(
+        self,
+        user_id: str,
+        ticker: str = "005930",
+        history_limit: int = 60,
+    ) -> dict:
         self._validate_user_id(user_id)
+        history_limit = max(10, min(1200, int(history_limit)))
         now = time.time()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -753,7 +759,7 @@ class MarketEngine:
             history = conn.execute(
                 """SELECT price, change_pct, buy_volume, sell_volume, volume,
                           event_type, created_at FROM price_history
-                   WHERE ticker = ? ORDER BY id DESC LIMIT 60""", (ticker,)
+                   WHERE ticker = ? ORDER BY id DESC LIMIT ?""", (ticker, history_limit)
             ).fetchall()
             latest_flows = {
                 row["ticker"]: row for row in conn.execute(

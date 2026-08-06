@@ -4,7 +4,7 @@ import os
 import secrets
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -96,10 +96,18 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         return {"message": "로그아웃했습니다."}
 
     @app.get("/api/market/snapshot")
-    async def snapshot(request: Request, ticker: str = "005930") -> dict:
+    async def snapshot(
+        request: Request,
+        ticker: str = "005930",
+        history_limit: int = Query(default=60, ge=10, le=1200),
+    ) -> dict:
         user = session_user(request)
         user_id = engine.account_id_for_user(user["id"]) if user else "guest_preview"
-        return engine.snapshot(user_id=user_id, ticker=ticker)
+        return engine.snapshot(
+            user_id=user_id,
+            ticker=ticker,
+            history_limit=history_limit,
+        )
 
     @app.post("/api/market/orders")
     async def order(request: OrderRequest, user: dict = Depends(current_user)) -> dict:

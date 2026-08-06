@@ -18,6 +18,8 @@ const state = {
   positionSort: { key: null, direction: 'asc' },
 };
 
+const CHART_POINT_LIMITS = [10, 20, 30, 60, 100, 200, 240, 480, 1200];
+
 const $ = (selector) => document.querySelector(selector);
 
 function escapeHtml(value) {
@@ -317,8 +319,10 @@ function renderChart() {
       : candles.length <= 12 ? 32
     : candles.length <= 20 ? 22
       : candles.length <= 30 ? 16 : 10;
-  const bodyWidth = Math.max(3, Math.min(maxCandleWidth, slot * .72));
-  const volumeWidth = Math.max(3, Math.min(maxCandleWidth, slot * .78));
+  const minimumBarWidth = candles.length > 600 ? .4 : candles.length > 200 ? .6 : 1;
+  const bodyWidth = Math.max(minimumBarWidth, Math.min(maxCandleWidth, slot * .72));
+  const volumeWidth = Math.max(minimumBarWidth, Math.min(maxCandleWidth, slot * .78));
+  const densityClass = candles.length > 600 ? 'ultra-dense' : candles.length > 200 ? 'dense' : '';
 
   const horizontalGrid = Array.from({ length: 6 }, (_, index) => {
     const ratio = index / 5;
@@ -376,7 +380,7 @@ function renderChart() {
     </g>
     <rect id="chart-hover-capture" class="chart-hover-capture" x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${volumeBottom - margin.top}" />`;
 
-  host.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(stock.name)} 캔들 차트">
+  host.innerHTML = `<svg class="${densityClass}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(stock.name)} 캔들 차트">
     ${verticalGrid}${horizontalGrid}${newsBands}${candleShapes}${averagePriceLine}${currentPrice}
     <line class="volume-divider" x1="${margin.left}" y1="${volumeTop - 5}" x2="${margin.left + plotWidth}" y2="${volumeTop - 5}" />
     ${volumeBars}${timeLabels}${hoverLayer}
@@ -564,7 +568,10 @@ async function refresh({ silent = false } = {}) {
   state.refreshing = true;
   $('#refresh').classList.add('spinning');
   try {
-    const query = new URLSearchParams({ ticker: state.ticker });
+    const query = new URLSearchParams({
+      ticker: state.ticker,
+      history_limit: String(state.chartPointLimit),
+    });
     const data = await api(`/api/market/snapshot?${query}`);
     if (state.ticker === requestedTicker) {
       state.data = data;
@@ -644,8 +651,8 @@ function setView(view, { updateHash = true } = {}) {
 
 $('#chart-point-limit').addEventListener('change', (event) => {
   const limit = Number(event.target.value);
-  state.chartPointLimit = [10, 20, 30, 60].includes(limit) ? limit : 20;
-  if (state.data) renderChart();
+  state.chartPointLimit = CHART_POINT_LIMITS.includes(limit) ? limit : 20;
+  refresh({ silent: true });
 });
 
 $("#stock-list").addEventListener("click", selectTickerFromRow);

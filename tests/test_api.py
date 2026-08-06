@@ -66,6 +66,33 @@ def test_snapshot_creates_account_and_six_stocks(market_app):
     assert data["portfolio"]["total_assets"] == 100_000_000
 
 
+def test_snapshot_supports_extended_chart_history_limits(market_app):
+    app, database = market_app
+    snapshot(app)
+    now = time.time()
+    with sqlite3.connect(database) as conn:
+        conn.executemany(
+            """INSERT INTO price_history
+               (ticker, price, change_pct, buy_volume, sell_volume, volume,
+                event_type, created_at)
+               VALUES ('005930', ?, 0.1, 100, 90, 190, 'tick', ?)""",
+            [(84_000 + index * 10, now + index) for index in range(150)],
+        )
+        conn.commit()
+
+    response = request(
+        app,
+        "GET",
+        "/api/market/snapshot",
+        params={"ticker": "005930", "history_limit": 100},
+    )
+    assert response.status_code == 200
+    assert len(response.json()["history"]) == 100
+    assert request(
+        app, "GET", "/api/market/snapshot", params={"history_limit": 1201}
+    ).status_code == 422
+
+
 def test_normal_tick_moves_every_stock_within_configured_range(market_app):
     assert BASE_CHANGE_MAX == 0.07
     app, database = market_app

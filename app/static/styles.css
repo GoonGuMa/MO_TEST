@@ -215,6 +215,8 @@ button { cursor: pointer; }
 .news-band.up { fill: #fecdd3; }
 .news-band.down { fill: #bfdbfe; }
 .candle-wick { stroke-width: 1.2; }
+.price-chart svg.dense .candle-wick { stroke-width: .7; }
+.price-chart svg.ultra-dense .candle-wick { stroke-width: .4; }
 .candle-wick.up { stroke: var(--red); }
 .candle-wick.down { stroke: var(--blue); }
 .candle-body.up { fill: var(--red); }
