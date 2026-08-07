@@ -159,7 +159,7 @@ tbody tr:hover { background: #f7faff; }
 .stock-tooltip {
     position: absolute; top: calc(100% + 9px); left: 0; z-index: 20;
     width: 220px; padding: 12px; border: 1px solid rgba(255, 255, 255, .14);
-    border-radius: 11px; opacity: 0; visibility: hidden; color: var(--text);
+    border-radius: 11px; opacity: 0; visibility: hidden; color: #f7f9fc;
     background: #17263d; box-shadow: 0 16px 38px rgba(0, 0, 0, .38);
     pointer-events: none; transform: translateY(-4px);
     transition: opacity .14s ease, visibility .14s ease, transform .14s ease;
@@ -180,17 +180,17 @@ tbody tr:hover { background: #f7faff; }
 }
 .stock-tooltip-head {
     display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
-    margin-bottom: 9px; padding-bottom: 8px; border-bottom: 1px solid var(--line);
+    margin-bottom: 9px; padding-bottom: 8px; border-bottom: 1px solid rgba(255, 255, 255, .14);
 }
-.stock-tooltip-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.stock-tooltip-head small { flex: 0 0 auto; color: var(--muted); }
+.stock-tooltip-head strong { overflow: hidden; color: #fff; text-overflow: ellipsis; white-space: nowrap; }
+.stock-tooltip-head small { flex: 0 0 auto; color: #9fb0c8; }
 .stock-tooltip-row {
     display: flex; align-items: center; justify-content: space-between;
-    gap: 12px; margin-top: 6px; color: var(--muted);
+    gap: 12px; margin-top: 6px; color: #b8c7dd;
 }
-.stock-tooltip-row b { color: var(--text); font-variant-numeric: tabular-nums; }
-.stock-tooltip-row b.up { color: var(--red); }
-.stock-tooltip-row b.down { color: #62a4ff; }
+.stock-tooltip-row b { color: #fff; font-variant-numeric: tabular-nums; }
+.stock-tooltip-row b.up { color: #ff8792; }
+.stock-tooltip-row b.down { color: #7cb3ff; }
 
 .company-list { display: grid; gap: 7px; max-height: 550px; overflow: auto; }
 .company-button {
@@ -218,8 +218,8 @@ tbody tr:hover { background: #f7faff; }
     fill: #17263d; stroke: rgba(255, 255, 255, .16); stroke-width: 1;
     filter: drop-shadow(0 8px 13px rgba(0, 0, 0, .3));
 }
-.chart-hover-time { fill: var(--muted); font-size: 10px; font-weight: 700; }
-.chart-hover-value { fill: var(--text); font-size: 13px; font-weight: 900; }
+.chart-hover-time { fill: #b8c7dd; font-size: 10px; font-weight: 700; }
+.chart-hover-value { fill: #fff; font-size: 13px; font-weight: 900; }
 .indicator-tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 16px; }
 .indicator-tab {
     padding: 8px 10px; border: 1px solid var(--line); border-radius: 999px;
