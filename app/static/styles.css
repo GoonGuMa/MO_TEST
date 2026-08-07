@@ -46,7 +46,7 @@ button { cursor: pointer; }
 .menu-close { width: 34px; height: 34px; border: 0; border-radius: 8px; background: var(--blue-soft); color: var(--blue); font-size: 23px; line-height: 1; }
 .menu-close:hover { background: #dceaff; }
 .drawer-nav { padding: 14px 10px; display: grid; gap: 4px; }
-.menu-item { position: relative; width: 100%; padding: 11px; display: grid; grid-template-columns: 36px 1fr; align-items: center; gap: 11px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); text-align: left; }
+.menu-item { position: relative; width: 100%; padding: 11px; display: grid; grid-template-columns: 36px 1fr; align-items: center; gap: 11px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); text-align: left; text-decoration: none; }
 .menu-item:hover { background: var(--soft); }
 .menu-item.active { background: var(--blue-soft); color: var(--blue); box-shadow: inset 3px 0 var(--blue); }
 .menu-item-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; background: var(--soft); font-size: 16px; font-weight: 900; }

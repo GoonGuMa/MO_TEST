@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .finance import app as finance_app
 from .market import MarketEngine, MarketError, SESSION_MAX_AGE_SECONDS
 
 
@@ -143,6 +144,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     async def randomize_market(_: dict = Depends(current_user)) -> dict:
         return engine.randomize_market()
 
+    app.mount("/finance", finance_app, name="finance")
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app
 

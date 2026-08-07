@@ -5,18 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="한국은행 ECOS 거시경제 지표 모니터">
     <title>Macro Scope · ECOS Monitor</title>
-    <link rel="stylesheet" href="/static/finance.css?v=7">
+    <link rel="stylesheet" href="/finance/static/finance.css?v=1">
 </head>
 <body>
 <main class="shell">
     <header class="topbar">
         <div class="brand"><span class="brand-mark">₩</span><span>Finance Data Lab</span></div>
         <nav class="nav" aria-label="금융 데이터 화면">
-            <a href="/fss">금융회사</a>
-            <a href="/krx">시장</a>
-            <a class="active" href="/ecos">경제</a>
-            <a href="/dart">기업공시</a>
-            <a href="/docs">API 문서</a>
+            <a class="market-link" href="/">모의투자</a>
+            <a href="/finance/fss">금융회사</a>
+            <a href="/finance/krx">시장</a>
+            <a class="active" href="/finance/ecos">경제</a>
+            <a href="/finance/dart">기업공시</a>
+            <a href="/finance/docs">API 문서</a>
         </nav>
     </header>
 
@@ -53,7 +54,7 @@
     <p class="footer">한국은행 경제통계시스템 ECOS 제공 데이터</p>
 </main>
 
-<script src="/static/finance.js?v=6"></script>
+<script src="/finance/static/finance.js?v=1"></script>
 <script>
     const { escapeHtml, formatNumber, request, setStatus, renderLine } = FinanceUI;
     const statusEl = document.querySelector("#status");

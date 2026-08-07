@@ -23,7 +23,8 @@ const FinanceUI = (() => {
     }
 
     async function request(url) {
-        const response = await fetch(url);
+        const target = url.startsWith("/api/") ? `/finance${url}` : url;
+        const response = await fetch(target);
         let payload;
         try {
             payload = await response.json();
@@ -91,7 +92,7 @@ const FinanceUI = (() => {
         element.innerHTML = `
             <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="시계열 차트">
                 <defs><linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stop-color="#37d4ca"/><stop offset="100%" stop-color="#37d4ca" stop-opacity="0"/>
+                    <stop offset="0%" stop-color="#1e63d5"/><stop offset="100%" stop-color="#1e63d5" stop-opacity="0"/>
                 </linearGradient></defs>
                 ${yTicks.map((tick) => `<line class="chart-grid" x1="${pad.left}" x2="${width-pad.right}" y1="${y(tick)}" y2="${y(tick)}"/>`).join("")}
                 ${yTicks.map((tick) => `<text class="chart-label" x="0" y="${y(tick)+4}">${escapeHtml(formatNumber(tick))}</text>`).join("")}

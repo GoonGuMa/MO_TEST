@@ -5,18 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="KRX 일별 시장 스캐너">
     <title>Market Pulse · KRX Scanner</title>
-    <link rel="stylesheet" href="/static/finance.css?v=3">
+    <link rel="stylesheet" href="/finance/static/finance.css?v=1">
 </head>
 <body>
 <main class="shell">
     <header class="topbar">
         <div class="brand"><span class="brand-mark">₩</span><span>Finance Data Lab</span></div>
         <nav class="nav" aria-label="금융 데이터 화면">
-            <a href="/fss">금융회사</a>
-            <a class="active" href="/krx">시장</a>
-            <a href="/ecos">경제</a>
-            <a href="/dart">기업공시</a>
-            <a href="/docs">API 문서</a>
+            <a class="market-link" href="/">모의투자</a>
+            <a href="/finance/fss">금융회사</a>
+            <a class="active" href="/finance/krx">시장</a>
+            <a href="/finance/ecos">경제</a>
+            <a href="/finance/dart">기업공시</a>
+            <a href="/finance/docs">API 문서</a>
         </nav>
     </header>
 
@@ -68,7 +69,7 @@
     <p class="footer">한국거래소 OPEN API 일별 매매정보 · 실시간 호가가 아닌 일별 확정 데이터입니다.</p>
 </main>
 
-<script src="/static/finance.js?v=3"></script>
+<script src="/finance/static/finance.js?v=1"></script>
 <script>
     const { escapeHtml, formatNumber, request, setStatus, renderBars } = FinanceUI;
     const statusEl = document.querySelector("#status");

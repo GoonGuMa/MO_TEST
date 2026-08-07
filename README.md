@@ -25,22 +25,37 @@ python3 -m venv .venv
 브라우저에서 <http://localhost:8080>을 엽니다. API 문서는
 <http://localhost:8080/docs>에서 확인할 수 있습니다.
 
+왼쪽 메뉴의 **금융 데이터 랩**을 선택하면 통합된 금융 화면으로 이동합니다.
+
+- KRX 시장: <http://localhost:8080/finance/krx>
+- 금융감독원 금융회사: <http://localhost:8080/finance/fss>
+- 한국은행 경제지표: <http://localhost:8080/finance/ecos>
+- OpenDART 기업공시: <http://localhost:8080/finance/dart>
+- 금융 API 문서: <http://localhost:8080/finance/docs>
+
 ## Docker로 실행
 
-Docker Hub 이미지를 내려받아 실행합니다. 회원 및 거래 데이터를 계속 보존하려면
-이름이 있는 볼륨을 `/app/data`에 연결하세요.
+프로젝트 루트에서 환경변수 예시 파일을 복사하고 필요한 API 키를 입력합니다.
 
 ```bash
-docker pull gogumaa/mo-test:0.3
-docker run --name motest -p 8080:8080 \
-  -v motest-data:/app/data \
-  -e MOCK_MARKET_ADMIN_KEY='원하는-비밀키' \
-  gogumaa/mo-test:0.3
+cp .env.example .env
+docker compose up --build -d
 ```
 
-브라우저에서 <http://localhost:8080>을 열고, 종료할 때는
-`docker stop motest`를 실행합니다. 운영자 키가 필요하지 않으면 `-e` 줄은 생략할 수
-있습니다.
+`.env`에는 필요한 값만 입력하면 됩니다.
+
+```dotenv
+MOCK_MARKET_ADMIN_KEY=뉴스발행용비밀키
+FSS_API_KEY=금융감독원_API키
+KRX_API_KEY=한국거래소_API키
+ECOS_API_KEY=한국은행_API키
+DART_API_KEY=OpenDART_API키
+```
+
+브라우저에서 <http://localhost:8080>을 엽니다. 컨테이너를 종료할 때는
+`docker compose down`, 다시 시작할 때는 `docker compose up -d`를 사용합니다.
+회원·거래 데이터는 `market-data` Docker 볼륨에 보존됩니다. `.env`는 Git에서
+제외되며 Docker 이미지 안에도 복사되지 않습니다.
 
 ## GitHub Codespaces에서 공유
 
@@ -53,10 +68,10 @@ Codespace가 중지되면 앱도 중지되며, 재시작 후 포트 공개 설�
 
 ## 회원 데이터 보존
 
-회원, 계좌, 보유 종목, 거래 내역은 `data/market.sqlite3`에 저장됩니다. 같은
-Codespace를 중지·재실행하거나 컨테이너를 Rebuild해도 `/workspaces`의 데이터는
-유지됩니다. Codespace를 삭제하고 새로 만들면 데이터가 초기화되므로 수업 기록을
-보존하려면 삭제 전에 SQLite 파일을 내려받아 백업하세요.
+회원, 계좌, 보유 종목, 거래 내역은 컨테이너의 `/app/data/market.sqlite3`에
+저장됩니다. `compose.yaml`의 `market-data` 볼륨 덕분에 컨테이너를 다시 만들거나
+이미지를 재빌드해도 데이터가 유지됩니다. `docker compose down -v`는 볼륨까지
+삭제하므로 데이터 보존이 필요하면 `-v`를 붙이지 마세요.
 
 ## 뉴스 발행 보호
 
@@ -72,7 +87,7 @@ MOCK_MARKET_ADMIN_KEY='원하는-비밀키' .venv/bin/uvicorn app.main:app --hos
 ## 테스트
 
 ```bash
-.venv/bin/pytest -q
+.venv/bin/python -m pytest -q
 ```
 
 ## 뉴스발행

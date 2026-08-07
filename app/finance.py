@@ -1,9 +1,4 @@
-"""금융 공공 API 대시보드용 독립 FastAPI 애플리케이션.
-
-기존 backend.py와 별개로 실행합니다.
-
-    python -m uvicorn main:app --reload
-"""
+"""MARKET LAB에 마운트되는 금융 공공 API 대시보드."""
 
 from __future__ import annotations
 
@@ -27,28 +22,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 
-BASE_DIR = Path(__file__).resolve().parent
-KEY_FILE = BASE_DIR / ".key"
-STATIC_DIR = BASE_DIR / "static"
+BASE_DIR = Path(__file__).resolve().parent / "static" / "finance"
+STATIC_DIR = BASE_DIR
 
 PAGE_FILES = {
-    "fss": BASE_DIR / "index3.html",
-    "krx": BASE_DIR / "index4.html",
-    "ecos": BASE_DIR / "index5.html",
-    "dart": BASE_DIR / "index6.html",
-}
-
-KEY_ALIASES = {
-    "금융감독원": "fss",
-    "fss": "fss",
-    "fisis": "fss",
-    "krx": "krx",
-    "한국은행 경제통계시스템": "ecos",
-    "한국은행": "ecos",
-    "ecos": "ecos",
-    "open dart": "dart",
-    "opendart": "dart",
-    "dart": "dart",
+    "fss": BASE_DIR / "fss.html",
+    "krx": BASE_DIR / "krx.html",
+    "ecos": BASE_DIR / "ecos.html",
+    "dart": BASE_DIR / "dart.html",
 }
 
 app = FastAPI(
@@ -74,39 +55,9 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 def load_api_keys() -> dict[str, str]:
-    """`.key`의 `#서비스명` 다음 줄에서 인증키를 읽습니다.
-
-    `라벨 = 실제키`, `라벨 - 실제키`, 키만 적은 형식을 모두 지원합니다.
-    환경 변수가 있으면 환경 변수 값을 우선합니다.
-    """
+    """외부 금융 API 인증키를 환경 변수에서만 읽습니다."""
 
     keys: dict[str, str] = {}
-    current_service: str | None = None
-
-    if KEY_FILE.exists():
-        for raw_line in KEY_FILE.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            if line.startswith("#"):
-                label = line[1:].strip().lower()
-                current_service = KEY_ALIASES.get(label)
-                continue
-            if not current_service:
-                continue
-
-            parts = re.split(r"\s+(?:=|-)\s+", line, maxsplit=1)
-            secret = parts[-1].strip()
-            if (
-                len(secret) >= 2
-                and secret[0] == secret[-1]
-                and secret[0] in {'"', "'"}
-            ):
-                secret = secret[1:-1].strip()
-            if secret:
-                keys[current_service] = secret
-            current_service = None
-
     env_names = {
         "fss": "FSS_API_KEY",
         "krx": "KRX_API_KEY",
@@ -124,7 +75,7 @@ def require_key(service: str) -> str:
     if not key:
         raise HTTPException(
             status_code=503,
-            detail=f"{service.upper()} 인증키를 .key 또는 환경 변수에 설정해 주세요.",
+            detail=f"{service.upper()} 인증키 환경 변수를 설정해 주세요.",
         )
     return key
 
@@ -192,36 +143,36 @@ async def get_json(
 
 
 @app.get("/", response_class=FileResponse, include_in_schema=False)
-def root_page() -> FileResponse:
+async def root_page() -> FileResponse:
     return FileResponse(PAGE_FILES["krx"])
 
 
 @app.get("/fss", response_class=FileResponse, include_in_schema=False)
 @app.get("/index3.html", response_class=FileResponse, include_in_schema=False)
-def fss_page() -> FileResponse:
+async def fss_page() -> FileResponse:
     return FileResponse(PAGE_FILES["fss"])
 
 
 @app.get("/krx", response_class=FileResponse, include_in_schema=False)
 @app.get("/index4.html", response_class=FileResponse, include_in_schema=False)
-def krx_page() -> FileResponse:
+async def krx_page() -> FileResponse:
     return FileResponse(PAGE_FILES["krx"])
 
 
 @app.get("/ecos", response_class=FileResponse, include_in_schema=False)
 @app.get("/index5.html", response_class=FileResponse, include_in_schema=False)
-def ecos_page() -> FileResponse:
+async def ecos_page() -> FileResponse:
     return FileResponse(PAGE_FILES["ecos"])
 
 
 @app.get("/dart", response_class=FileResponse, include_in_schema=False)
 @app.get("/index6.html", response_class=FileResponse, include_in_schema=False)
-def dart_page() -> FileResponse:
+async def dart_page() -> FileResponse:
     return FileResponse(PAGE_FILES["dart"])
 
 
 @app.get("/health", tags=["system"])
-def health() -> dict[str, Any]:
+async def health() -> dict[str, Any]:
     keys = load_api_keys()
     return {
         "status": "ok",
