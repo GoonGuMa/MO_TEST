@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="OpenDART 기업 공시 및 재무 분석기">
+    <title>Company Deep Dive · OpenDART</title>
+    <link rel="stylesheet" href="/static/finance.css">
+</head>
+<body>
+<main class="shell">
+    <header class="topbar">
+        <div class="brand"><span class="brand-mark">₩</span><span>Finance Data Lab</span></div>
+        <nav class="nav" aria-label="금융 데이터 화면">
+            <a href="/fss">금융회사</a>
+            <a href="/krx">시장</a>
+            <a href="/ecos">경제</a>
+            <a class="active" href="/dart">기업공시</a>
+            <a href="/docs">API 문서</a>
+        </nav>
+    </header>
+
+    <section class="hero">
+        <div>
+            <p class="eyebrow">OpenDART Company Deep Dive</p>
+            <h1>기업의 숫자와 공시를<br>함께 읽습니다.</h1>
+            <p class="lede">회사명이나 종목코드로 검색하면 기업 개황, 최근 공시, 사업보고서 주요 재무계정을 한 화면에 정리합니다.</p>
+        </div>
+    </section>
+
+    <form id="search-form" class="controls">
+        <div class="field">
+            <label for="company-query">회사명 또는 종목코드</label>
+            <input id="company-query" class="search-input" value="삼성전자" placeholder="예: 삼성전자, 005930">
+        </div>
+        <button id="search-button" class="button" type="submit">기업 검색</button>
+    </form>
+    <div id="status" class="status">조회 준비</div>
+
+    <section class="grid-main">
+        <div>
+            <article class="panel" style="margin-bottom:12px">
+                <div class="panel-head"><h2 class="panel-title">기업 개황</h2><span id="financial-year" class="panel-note">-</span></div>
+                <div id="profile" class="profile"><div class="empty">기업을 검색해 주세요.</div></div>
+            </article>
+
+            <article class="panel">
+                <div class="panel-head"><h2 class="panel-title">주요 재무계정</h2><span class="panel-note">연결재무제표 우선 표시</span></div>
+                <div id="financial-table" class="table-wrap"><div class="empty">기업을 선택하면 표시됩니다.</div></div>
+            </article>
+        </div>
+
+        <aside class="panel">
+            <div class="panel-head"><h2 class="panel-title">검색 결과</h2><span id="search-count" class="panel-note">0개</span></div>
+            <div id="search-results" class="company-list"><div class="empty">검색어를 입력하세요.</div></div>
+        </aside>
+    </section>
+
+    <section class="panel" style="margin-top:12px">
+        <div class="panel-head"><h2 class="panel-title">최근 1년 공시</h2><span id="disclosure-count" class="panel-note">0건</span></div>
+        <div id="timeline" class="timeline"><div class="empty">기업을 선택하면 공시가 표시됩니다.</div></div>
+    </section>
+    <p class="footer">OpenDART 제공 공시 데이터 · 투자 판단을 위한 단독 근거로 사용하지 마세요.</p>
+</main>
+
+<script src="/static/finance.js"></script>
+<script>
+    const { escapeHtml, formatNumber, request, setStatus } = FinanceUI;
+    const statusEl = document.querySelector("#status");
+    const resultsEl = document.querySelector("#search-results");
+    let selectedCode = null;
+
+    function amount(value) {
+        const numeric = Number(String(value ?? "").replaceAll(",", ""));
+        return Number.isFinite(numeric) ? formatNumber(numeric, true) : (value || "-");
+    }
+
+    function renderSearchResults(companies) {
+        document.querySelector("#search-count").textContent = `${companies.length}개`;
+        if (!companies.length) {
+            resultsEl.innerHTML = '<div class="empty">검색 결과가 없습니다.</div>';
+            return;
+        }
+        resultsEl.innerHTML = companies.map((company) => `
+            <button class="company-button ${selectedCode === company.corp_code ? "active" : ""}" data-code="${escapeHtml(company.corp_code)}">
+                ${escapeHtml(company.corp_name)}
+                <small>${escapeHtml(company.stock_code || "비상장")} · ${escapeHtml(company.corp_code)}</small>
+            </button>`).join("");
+        resultsEl.querySelectorAll(".company-button").forEach((button) => {
+            button.addEventListener("click", () => loadCompany(button.dataset.code));
+        });
+    }
+
+    function renderCompany(data) {
+        const company = data.company;
+        const marketNames = { Y: "유가증권", K: "코스닥", N: "코넥스", E: "기타" };
+        document.querySelector("#profile").innerHTML = [
+            ["회사명", company.name],
+            ["종목코드", company.stock_code || "비상장"],
+            ["시장", marketNames[company.market] || company.market || "-"],
+            ["대표자", company.ceo || "-"],
+            ["결산월", company.fiscal_month ? `${company.fiscal_month}월` : "-"],
+            ["주소", company.address || "-"],
+        ].map(([label, value]) => `<div class="profile-item"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`).join("");
+        document.querySelector("#financial-year").textContent = `${data.financial_year} 사업보고서`;
+
+        const preferredAccounts = ["매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "자본총계"];
+        let rows = data.financials.filter((row) => row.fs_div === "CFS" && preferredAccounts.includes(row.account));
+        if (!rows.length) rows = data.financials.filter((row) => preferredAccounts.includes(row.account));
+        if (!rows.length) rows = data.financials.slice(0, 15);
+        document.querySelector("#financial-table").innerHTML = rows.length ? `<table>
+            <thead><tr><th>재무제표</th><th>계정</th><th class="num">당기</th><th class="num">전기</th></tr></thead>
+            <tbody>${rows.map((row) => `<tr>
+                <td>${escapeHtml(row.statement)}</td><td><strong>${escapeHtml(row.account)}</strong></td>
+                <td class="num">${escapeHtml(amount(row.current))}</td><td class="num">${escapeHtml(amount(row.previous))}</td>
+            </tr>`).join("")}</tbody></table>` : '<div class="empty">조회 가능한 주요 재무계정이 없습니다.</div>';
+
+        document.querySelector("#disclosure-count").textContent = `${data.disclosures.length}건`;
+        document.querySelector("#timeline").innerHTML = data.disclosures.length ? data.disclosures.map((item) => `
+            <div class="timeline-item">
+                <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.report)}</a>
+                <small>${escapeHtml(item.date)} · ${escapeHtml(item.submitter)}</small>
+            </div>`).join("") : '<div class="empty">최근 1년 공시가 없습니다.</div>';
+    }
+
+    async function loadCompany(corpCode) {
+        selectedCode = corpCode;
+        document.querySelectorAll(".company-button").forEach((button) => button.classList.toggle("active", button.dataset.code === corpCode));
+        setStatus(statusEl, "기업 개황과 재무·공시 정보를 조회하고 있습니다.", "loading");
+        try {
+            const data = await request(`/api/dart/company?corp_code=${encodeURIComponent(corpCode)}`);
+            renderCompany(data);
+            setStatus(statusEl, `${data.company.name} 정보를 불러왔습니다.`, "success");
+        } catch (error) {
+            setStatus(statusEl, error.message, "error");
+        }
+    }
+
+    async function searchCompany(event) {
+        event?.preventDefault();
+        const query = document.querySelector("#company-query").value.trim();
+        if (!query) return;
+        const button = document.querySelector("#search-button");
+        button.disabled = true;
+        setStatus(statusEl, `"${query}" 법인코드를 검색하고 있습니다. 첫 조회는 잠시 걸릴 수 있습니다.`, "loading");
+        try {
+            const data = await request(`/api/dart/search?q=${encodeURIComponent(query)}`);
+            renderSearchResults(data.companies);
+            if (data.companies.length) {
+                await loadCompany(data.companies[0].corp_code);
+            } else {
+                setStatus(statusEl, `"${query}" 검색 결과가 없습니다.`, "error");
+            }
+        } catch (error) {
+            setStatus(statusEl, error.message, "error");
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    document.querySelector("#search-form").addEventListener("submit", searchCompany);
+    searchCompany();
+</script>
+</body>
+</html>

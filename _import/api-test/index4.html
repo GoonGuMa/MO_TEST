@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="KRX 일별 시장 스캐너">
+    <title>Market Pulse · KRX Scanner</title>
+    <link rel="stylesheet" href="/static/finance.css?v=3">
+</head>
+<body>
+<main class="shell">
+    <header class="topbar">
+        <div class="brand"><span class="brand-mark">₩</span><span>Finance Data Lab</span></div>
+        <nav class="nav" aria-label="금융 데이터 화면">
+            <a href="/fss">금융회사</a>
+            <a class="active" href="/krx">시장</a>
+            <a href="/ecos">경제</a>
+            <a href="/dart">기업공시</a>
+            <a href="/docs">API 문서</a>
+        </nav>
+    </header>
+
+    <section class="hero">
+        <div>
+            <p class="eyebrow">KRX Daily Market Scanner</p>
+            <h1>오늘의 시장을<br>한눈에 훑습니다.</h1>
+            <p class="lede">KRX의 KOSPI·KOSDAQ 일별 매매정보를 합쳐 거래대금, 시가총액, 등락률 상위 종목을 보여줍니다. 휴장일이면 직전 데이터 제공일을 자동으로 찾습니다.</p>
+        </div>
+    </section>
+
+    <section class="controls">
+        <div class="field">
+            <label for="base-date">기준일</label>
+            <input id="base-date" type="date">
+        </div>
+        <button id="load-market" class="button">시장 조회</button>
+    </section>
+    <div id="status" class="status">조회 준비</div>
+
+    <section class="metric-grid">
+        <article class="metric"><span class="metric-label">종목 수</span><strong id="issues" class="metric-value">-</strong><span class="metric-note">KOSPI + KOSDAQ</span></article>
+        <article class="metric"><span class="metric-label">상승</span><strong id="advancers" class="metric-value up">-</strong><span class="metric-note">전일 대비</span></article>
+        <article class="metric"><span class="metric-label">하락</span><strong id="decliners" class="metric-value down">-</strong><span class="metric-note">전일 대비</span></article>
+        <article class="metric"><span class="metric-label">거래대금</span><strong id="trading-value" class="metric-value">-</strong><span id="effective-date" class="metric-note">데이터 기준일</span></article>
+    </section>
+
+    <section class="grid-2">
+        <article class="panel">
+            <div class="panel-head"><h2 class="panel-title">거래대금 상위</h2><span class="panel-note">전체 시장</span></div>
+            <div id="value-bars"></div>
+        </article>
+        <article class="panel">
+            <div class="panel-head"><h2 class="panel-title">시가총액 상위</h2><span class="panel-note">전체 시장</span></div>
+            <div id="cap-bars"></div>
+        </article>
+    </section>
+
+    <section class="grid-2">
+        <article class="panel">
+            <div class="panel-head"><h2 class="panel-title">상승률 상위</h2><span class="panel-note">시가 대비 종가</span></div>
+            <div id="gainers-table" class="table-wrap"></div>
+        </article>
+        <article class="panel">
+            <div class="panel-head"><h2 class="panel-title">하락률 상위</h2><span class="panel-note">시가 대비 종가</span></div>
+            <div id="decliners-table" class="table-wrap"></div>
+        </article>
+    </section>
+    <p class="footer">한국거래소 OPEN API 일별 매매정보 · 실시간 호가가 아닌 일별 확정 데이터입니다.</p>
+</main>
+
+<script src="/static/finance.js?v=3"></script>
+<script>
+    const { escapeHtml, formatNumber, request, setStatus, renderBars } = FinanceUI;
+    const statusEl = document.querySelector("#status");
+    const dateInput = document.querySelector("#base-date");
+
+    function dateString(date) {
+        return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    }
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    dateInput.value = dateString(yesterday);
+    dateInput.max = dateString(new Date());
+
+    function renderStockTable(element, rows) {
+        element.innerHTML = `<table>
+            <thead><tr><th>종목</th><th>시장</th><th class="num">시가</th><th class="num">종가</th><th class="num">시가 대비</th><th class="num">거래대금</th></tr></thead>
+            <tbody>${rows.map((row) => {
+                const direction = row.close > row.open ? "up" : row.close < row.open ? "down" : "";
+                const rate = Number(row.open_change_rate) || 0;
+                return `<tr>
+                <td><strong>${escapeHtml(row.name)}</strong><br><span class="muted">${escapeHtml(row.symbol)}</span></td>
+                <td>${escapeHtml(row.market)}</td>
+                <td class="num">${formatNumber(row.open)}</td>
+                <td class="num ${direction}">${formatNumber(row.close)}</td>
+                <td class="num ${direction}">${rate > 0 ? "+" : ""}${formatNumber(rate)}%</td>
+                <td class="num">${formatNumber(row.trading_value, true)}</td>
+            </tr>`;
+            }).join("")}</tbody>
+        </table>`;
+    }
+
+    function stockTooltip(row) {
+        const open = Number(row.open) || 0;
+        const close = Number(row.close) || 0;
+        const intradayRate = Number(row.open_change_rate) || (open ? (close - open) / open * 100 : 0);
+        const direction = close > open ? "up" : close < open ? "down" : "";
+        const sign = intradayRate > 0 ? "+" : "";
+        return `
+            <span class="stock-tooltip-head">
+                <strong>${escapeHtml(row.name)}</strong>
+                <small>${escapeHtml(row.symbol)}</small>
+            </span>
+            <span class="stock-tooltip-row"><span>시작가</span><b>${formatNumber(open)}원</b></span>
+            <span class="stock-tooltip-row"><span>현재가(종가)</span><b class="${direction}">${formatNumber(close)}원</b></span>
+            <span class="stock-tooltip-row"><span>상승률(시가 대비)</span><b class="${direction}">${sign}${formatNumber(intradayRate)}%</b></span>`;
+    }
+
+    async function loadMarket() {
+        const button = document.querySelector("#load-market");
+        button.disabled = true;
+        setStatus(statusEl, "KRX 시장 데이터를 조회하고 있습니다.", "loading");
+        try {
+            const data = await request(`/api/krx/market?base_date=${encodeURIComponent(dateInput.value)}`);
+            document.querySelector("#issues").textContent = formatNumber(data.summary.issues);
+            document.querySelector("#advancers").textContent = formatNumber(data.summary.advancers);
+            document.querySelector("#decliners").textContent = formatNumber(data.summary.decliners);
+            document.querySelector("#trading-value").textContent = formatNumber(data.summary.trading_value, true);
+            document.querySelector("#effective-date").textContent = `${data.effective_date} 기준`;
+            renderBars(document.querySelector("#value-bars"), data.top_trading_value.slice(0, 10), {
+                value: "trading_value",
+                format: (value) => formatNumber(value, true),
+                tooltip: stockTooltip,
+            });
+            renderBars(document.querySelector("#cap-bars"), data.top_market_cap.slice(0, 10), {
+                value: "market_cap",
+                format: (value) => formatNumber(value, true),
+                tooltip: stockTooltip,
+            });
+            renderStockTable(document.querySelector("#gainers-table"), data.top_gainers.slice(0, 10));
+            renderStockTable(document.querySelector("#decliners-table"), data.top_decliners.slice(0, 10));
+            const fallback = data.requested_date !== data.effective_date ? ` 요청일 대신 직전 제공일 ${data.effective_date} 데이터를 표시합니다.` : "";
+            setStatus(statusEl, `시장 데이터 ${data.summary.issues}종목을 불러왔습니다.${fallback}`, "success");
+        } catch (error) {
+            setStatus(statusEl, error.message, "error");
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    document.querySelector("#load-market").addEventListener("click", loadMarket);
+    loadMarket();
+</script>
+</body>
+</html>

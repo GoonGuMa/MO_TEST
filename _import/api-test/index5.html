@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="한국은행 ECOS 거시경제 지표 모니터">
+    <title>Macro Scope · ECOS Monitor</title>
+    <link rel="stylesheet" href="/static/finance.css?v=7">
+</head>
+<body>
+<main class="shell">
+    <header class="topbar">
+        <div class="brand"><span class="brand-mark">₩</span><span>Finance Data Lab</span></div>
+        <nav class="nav" aria-label="금융 데이터 화면">
+            <a href="/fss">금융회사</a>
+            <a href="/krx">시장</a>
+            <a class="active" href="/ecos">경제</a>
+            <a href="/dart">기업공시</a>
+            <a href="/docs">API 문서</a>
+        </nav>
+    </header>
+
+    <section class="hero">
+        <div>
+            <p class="eyebrow">Bank of Korea Macro Monitor</p>
+            <h1>경제의 흐름을<br>한 장에 담습니다.</h1>
+            <p class="lede">한국은행 ECOS의 기준금리, 환율, 소비자물가, 통화량, 국내총생산 시계열을 조회합니다. 지표 카드를 누르면 전체 추이를 확인할 수 있습니다.</p>
+        </div>
+    </section>
+    <div id="status" class="status">경제지표를 불러오는 중입니다.</div>
+
+    <section id="metric-grid" class="metric-grid"></section>
+
+    <section class="panel">
+        <div class="panel-head">
+            <h2 id="chart-title" class="panel-title">경제지표 추이</h2>
+            <span id="chart-meta" class="panel-note">ECOS</span>
+        </div>
+        <div id="indicator-tabs" class="indicator-tabs"></div>
+        <div id="indicator-chart" class="chart"></div>
+    </section>
+
+    <section id="detail-grid" class="grid-2" style="margin-top:12px">
+        <article id="recent-panel" class="panel">
+            <div class="panel-head"><h2 class="panel-title">최근 관측값</h2><span class="panel-note">선택 지표</span></div>
+            <div id="recent-table" class="table-wrap"></div>
+        </article>
+        <article class="panel">
+            <div class="panel-head"><h2 class="panel-title">읽는 방법</h2><span class="panel-note">Guide</span></div>
+            <p class="lede" style="margin:0">지표마다 발표 주기가 다릅니다. 환율은 일별, 기준금리·물가·통화량은 월별, GDP는 연간으로 표시됩니다. 최신 값의 기준 시점이 서로 다를 수 있으므로 값 옆의 시점을 함께 확인하세요.</p>
+        </article>
+    </section>
+    <p class="footer">한국은행 경제통계시스템 ECOS 제공 데이터</p>
+</main>
+
+<script src="/static/finance.js?v=6"></script>
+<script>
+    const { escapeHtml, formatNumber, request, setStatus, renderLine } = FinanceUI;
+    const statusEl = document.querySelector("#status");
+    const exchangeIds = ["usd_krw", "cny_krw", "jpy_krw"];
+    const exchangeOptions = [
+        { id: "usd_krw", label: "미국 · 원/달러" },
+        { id: "cny_krw", label: "중국 · 원/위안" },
+        { id: "jpy_krw", label: "일본 · 원/100엔" },
+    ];
+    let indicators = [];
+    let activeId = null;
+    let selectedExchangeId = "usd_krw";
+
+    function validIndicator(indicator) {
+        return indicator.points?.length;
+    }
+
+    function dashboardIndicators() {
+        const ids = ["base_rate", selectedExchangeId, "cpi", "m2", "gdp"];
+        return ids.map((id) => indicators.find((indicator) => indicator.id === id)).filter(Boolean);
+    }
+
+    function metricContent(indicator) {
+        const latest = indicator.points?.at(-1);
+        const previous = indicator.points?.at(-2);
+        const delta = latest && previous ? latest.value - previous.value : null;
+        return {
+            latest,
+            value: latest ? formatNumber(latest.value) : "-",
+            note: latest
+                ? `${escapeHtml(latest.time)} · ${escapeHtml(latest.unit || "")}${delta !== null ? ` · 이전 대비 ${delta > 0 ? "+" : ""}${formatNumber(delta)}` : ""}`
+                : escapeHtml(indicator.error || "데이터 없음"),
+        };
+    }
+
+    function renderMetrics() {
+        document.querySelector("#metric-grid").innerHTML = dashboardIndicators().slice(0, 4).map((indicator) => {
+            const metric = metricContent(indicator);
+            if (exchangeIds.includes(indicator.id)) {
+                return `<article class="metric">
+                    <label class="fx-select-wrap" aria-label="환율 국가 선택">
+                        <select id="exchange-selector" class="fx-selector">
+                            ${exchangeOptions.map((option) => `<option value="${option.id}" ${option.id === selectedExchangeId ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+                        </select>
+                    </label>
+                    <strong class="metric-value">${metric.value}</strong>
+                    <span class="metric-note">${metric.note}</span>
+                </article>`;
+            }
+            return `<article class="metric">
+                <span class="metric-label">${escapeHtml(indicator.label)}</span>
+                <strong class="metric-value">${metric.value}</strong>
+                <span class="metric-note">${metric.note}</span>
+            </article>`;
+        }).join("");
+        document.querySelector("#exchange-selector")?.addEventListener("change", (event) => {
+            selectedExchangeId = event.target.value;
+            renderMetrics();
+            renderTabs();
+            selectIndicator(selectedExchangeId);
+        });
+    }
+
+    function renderTabs() {
+        const visibleIndicators = dashboardIndicators();
+        document.querySelector("#indicator-tabs").innerHTML = visibleIndicators.map((indicator) => `
+            <button class="indicator-tab" data-id="${escapeHtml(indicator.id)}">${escapeHtml(indicator.label)}${validIndicator(indicator) ? "" : " · 오류"}</button>`).join("");
+        document.querySelectorAll(".indicator-tab").forEach((button) => {
+            button.addEventListener("click", () => selectIndicator(button.dataset.id));
+        });
+    }
+
+    function selectIndicator(id) {
+        activeId = id;
+        const indicator = indicators.find((item) => item.id === id);
+        const showsChangeRate = id !== "base_rate";
+        document.querySelectorAll(".indicator-tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.id === id));
+        document.querySelector("#chart-title").textContent = indicator.label;
+        document.querySelector("#chart-meta").textContent = `${indicator.stat_code} · ${indicator.cycle}`;
+        renderLine(document.querySelector("#indicator-chart"), indicator.points, {
+            unit: indicator.points?.at(-1)?.unit || "",
+        });
+        const recent = (indicator.points || [])
+            .map((point, index, points) => {
+                const previous = points[index - 1];
+                const changeRate = previous && Number(previous.value)
+                    ? (Number(point.value) - Number(previous.value)) / Number(previous.value) * 100
+                    : null;
+                return { ...point, changeRate };
+            })
+            .slice(-12)
+            .reverse();
+        document.querySelector("#recent-table").innerHTML = recent.length ? `<table>
+            <thead><tr><th>시점</th><th>항목</th><th class="num">값</th><th>단위</th>${showsChangeRate ? '<th class="num">증감률</th>' : ""}</tr></thead>
+            <tbody>${recent.map((point) => `<tr>
+                <td>${escapeHtml(point.time)}</td><td>${escapeHtml(point.item)}</td>
+                <td class="num">${formatNumber(point.value)}</td><td>${escapeHtml(point.unit)}</td>
+                ${showsChangeRate ? `<td class="num ${point.changeRate > 0 ? "up" : point.changeRate < 0 ? "down" : ""}">${point.changeRate === null ? "-" : `${point.changeRate > 0 ? "+" : ""}${formatNumber(point.changeRate)}%`}</td>` : ""}
+            </tr>`).join("")}</tbody></table>` : `<div class="empty">${escapeHtml(indicator.error || "데이터가 없습니다.")}</div>`;
+    }
+
+    async function loadIndicators() {
+        setStatus(statusEl, "한국은행 ECOS 지표를 조회하고 있습니다.", "loading");
+        try {
+            const series = "base_rate,usd_krw,cny_krw,jpy_krw,cpi,m2,gdp";
+            const data = await request(`/api/ecos/indicators?series=${series}`);
+            indicators = data.indicators;
+            renderMetrics();
+            renderTabs();
+            const visibleIndicators = dashboardIndicators();
+            const first = visibleIndicators.find(validIndicator) || visibleIndicators[0];
+            if (first) selectIndicator(first.id);
+            const successes = visibleIndicators.filter(validIndicator).length;
+            setStatus(statusEl, `5개 지표 중 ${successes}개를 불러왔습니다.`, successes ? "success" : "error");
+        } catch (error) {
+            setStatus(statusEl, error.message, "error");
+            document.querySelector("#metric-grid").innerHTML = "";
+            document.querySelector("#indicator-chart").innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+        }
+    }
+    loadIndicators();
+</script>
+</body>
+</html>
