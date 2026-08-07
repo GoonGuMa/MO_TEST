@@ -162,3 +162,41 @@ const FinanceUI = (() => {
 
     return { escapeHtml, formatNumber, request, setStatus, renderBars, renderLine };
 })();
+
+(() => {
+    const toggle = document.querySelector("#menu-toggle");
+    const close = document.querySelector("#menu-close");
+    const menu = document.querySelector("#app-menu");
+    const backdrop = document.querySelector("#menu-backdrop");
+    if (!toggle || !close || !menu || !backdrop) return;
+
+    function setMenuOpen(open) {
+        menu.classList.toggle("open", open);
+        backdrop.classList.toggle("open", open);
+        document.body.classList.toggle("menu-open", open);
+        menu.setAttribute("aria-hidden", String(!open));
+        backdrop.setAttribute("aria-hidden", String(!open));
+        toggle.setAttribute("aria-expanded", String(open));
+    }
+
+    menu.querySelectorAll(".drawer-item").forEach((link) => {
+        const target = new URL(link.href, window.location.origin);
+        if (target.pathname === window.location.pathname && !target.hash) {
+            link.classList.add("active");
+            link.setAttribute("aria-current", "page");
+        }
+    });
+
+    toggle.addEventListener("click", () => setMenuOpen(true));
+    close.addEventListener("click", () => {
+        setMenuOpen(false);
+        toggle.focus();
+    });
+    backdrop.addEventListener("click", () => setMenuOpen(false));
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && menu.classList.contains("open")) {
+            setMenuOpen(false);
+            toggle.focus();
+        }
+    });
+})();

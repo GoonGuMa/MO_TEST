@@ -39,6 +39,7 @@ python3 -m venv .venv
 
 ```bash
 cp .env.example .env
+docker volume create motest-data
 docker compose up --build -d
 ```
 
@@ -54,7 +55,7 @@ DART_API_KEY=OpenDART_API키
 
 브라우저에서 <http://localhost:8080>을 엽니다. 컨테이너를 종료할 때는
 `docker compose down`, 다시 시작할 때는 `docker compose up -d`를 사용합니다.
-회원·거래 데이터는 `market-data` Docker 볼륨에 보존됩니다. `.env`는 Git에서
+회원·거래 데이터는 기존 0.3 버전과 같은 `motest-data` Docker 볼륨에 보존됩니다. `.env`는 Git에서
 제외되며 Docker 이미지 안에도 복사되지 않습니다.
 
 ## GitHub Codespaces에서 공유
@@ -69,9 +70,9 @@ Codespace가 중지되면 앱도 중지되며, 재시작 후 포트 공개 설�
 ## 회원 데이터 보존
 
 회원, 계좌, 보유 종목, 거래 내역은 컨테이너의 `/app/data/market.sqlite3`에
-저장됩니다. `compose.yaml`의 `market-data` 볼륨 덕분에 컨테이너를 다시 만들거나
-이미지를 재빌드해도 데이터가 유지됩니다. `docker compose down -v`는 볼륨까지
-삭제하므로 데이터 보존이 필요하면 `-v`를 붙이지 마세요.
+저장됩니다. `compose.yaml`이 외부 `motest-data` 볼륨을 재사용하므로 컨테이너를
+다시 만들거나 이미지를 재빌드해도 데이터가 유지되고, `docker compose down -v`에도
+이 외부 볼륨은 삭제되지 않습니다.
 
 ## 뉴스 발행 보호
 

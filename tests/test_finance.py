@@ -47,6 +47,18 @@ def test_finance_pages_share_market_lab_navigation(page, path, active_label):
     assert active_label in html
     assert 'href="/">모의투자</a>' in html
     assert "/finance/static/finance.css" in html
+    assert 'id="menu-toggle"' in html
+    assert 'id="app-menu"' in html
+
+
+def test_finance_layout_uses_market_lab_width_and_drawer_script():
+    css = (PAGE_FILES["krx"].parent / "finance.css").read_text(encoding="utf-8")
+    javascript = (PAGE_FILES["krx"].parent / "finance.js").read_text(encoding="utf-8")
+
+    assert "width: min(1500px, calc(100% - 48px))" in css
+    assert "width: 100vw" in css
+    assert "margin-left: calc(50% - 50vw)" in css
+    assert 'document.querySelector("#menu-toggle")' in javascript
 
 
 def test_finance_health_reports_environment_configuration(finance_app, monkeypatch):
