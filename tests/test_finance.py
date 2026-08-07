@@ -45,7 +45,8 @@ def test_finance_pages_share_market_lab_navigation(page, path, active_label):
 
     assert path in registered_paths
     assert active_label in html
-    assert 'href="/">모의투자</a>' in html
+    assert '<a class="drawer-item" href="/">' in html
+    assert 'class="market-link"' not in html
     assert "/finance/static/finance.css" in html
     assert 'id="menu-toggle"' in html
     assert 'id="app-menu"' in html
