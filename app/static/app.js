@@ -8,6 +8,7 @@ const state = {
   authMode: 'login',
   ticker: '005930',
   side: 'buy',
+  costMethod: 'lofo',
   data: null,
   countdownEnd: 0,
   refreshing: false,
@@ -15,10 +16,12 @@ const state = {
   marketRandomizeUnlocked: false,
   randomNewsInitialized: false,
   lastRandomNewsId: 0,
+  selectedAssetTicker: null,
   positionSort: { key: null, direction: 'asc' },
 };
 
 const CHART_POINT_LIMITS = [10, 20, 30, 60, 100, 200, 240, 480, 1200];
+const ASSET_COLORS = ['#1e63d5', '#e23d48', '#0a9b73', '#e8942f', '#7c5ce7', '#0f9fb3'];
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -31,6 +34,28 @@ function escapeHtml(value) {
 function signedPercent(value) {
   const number = Number(value || 0);
   return `${number > 0 ? '+' : ''}${number.toFixed(2)}%`;
+}
+
+function signedWon(value) {
+  const number = Number(value || 0);
+  return `${number > 0 ? '+' : ''}${won.format(number)}`;
+}
+
+function compactWon(value) {
+  const number = Number(value || 0);
+  if (Math.abs(number) >= 100_000_000) return `${(number / 100_000_000).toFixed(2)}억원`;
+  if (Math.abs(number) >= 10_000) return `${(number / 10_000).toFixed(0)}만원`;
+  return `${integer.format(number)}원`;
+}
+
+function costMethodLabel(value) {
+  return ({ fifo: 'FIFO', lifo: 'LIFO', lofo: 'LOFO', avg: '평균' })[value] || '-';
+}
+
+function realizedProfitMarkup(trade) {
+  if (trade.side !== 'sell' || trade.realized_profit == null) return '<span>-</span>';
+  return `<strong class="trade-profit ${directionClass(trade.realized_profit)}">${signedWon(trade.realized_profit)}</strong>
+    <small>${signedPercent(trade.realized_profit_pct)}</small>`;
 }
 
 function formatVolume(value) {
@@ -523,11 +548,16 @@ function renderTradeHistory() {
   const sells = trades.filter((trade) => trade.side === 'sell');
   const buyTotal = buys.reduce((sum, trade) => sum + Number(trade.total), 0);
   const sellTotal = sells.reduce((sum, trade) => sum + Number(trade.total), 0);
+  const realizedProfit = sells.reduce(
+    (sum, trade) => sum + Number(trade.realized_profit || 0), 0,
+  );
   $('#history-trade-count').textContent = `${integer.format(trades.length)}건`;
   $('#history-buy-total').textContent = won.format(buyTotal);
   $('#history-sell-total').textContent = won.format(sellTotal);
   $('#history-buy-count').textContent = `매수 ${integer.format(buys.length)}건`;
   $('#history-sell-count').textContent = `매도 ${integer.format(sells.length)}건`;
+  $('#history-realized-profit').textContent = signedWon(realizedProfit);
+  $('#history-realized-profit').className = directionClass(realizedProfit);
   $('#history-table-count').textContent = `총 ${integer.format(trades.length)}건`;
   $('#trade-history').innerHTML = trades.length ? trades.map((trade) => `
     <tr>
@@ -538,8 +568,95 @@ function renderTradeHistory() {
       <td>${integer.format(trade.quantity)}주</td>
       <td>${integer.format(trade.price)}원</td>
       <td><strong class="trade-total">${won.format(trade.total)}</strong></td>
+      <td><span class="cost-method-badge">${costMethodLabel(trade.cost_method)}</span></td>
+      <td>${realizedProfitMarkup(trade)}</td>
     </tr>`).join('')
-    : '<tr><td colspan="7" class="empty">거래 내역이 없습니다.</td></tr>';
+    : '<tr><td colspan="9" class="empty">거래 내역이 없습니다.</td></tr>';
+}
+
+function renderAssetOverview() {
+  const portfolio = state.data.portfolio;
+  const positions = portfolio.positions || [];
+  const totalAssets = Number(portfolio.total_assets || 0);
+  const allocations = [
+    { key: 'cash', name: '현금', value: Number(portfolio.cash || 0), color: '#0b1d3a' },
+    ...positions.map((position, index) => ({
+      key: position.ticker,
+      name: position.name,
+      value: Number(position.market_value || 0),
+      color: ASSET_COLORS[index % ASSET_COLORS.length],
+    })),
+  ];
+  const circumference = 2 * Math.PI * 78;
+  let offset = 0;
+  const segments = allocations.filter((item) => item.value > 0).map((item) => {
+    const length = totalAssets ? item.value / totalAssets * circumference : 0;
+    const segment = `<circle class="asset-chart-segment" cx="110" cy="110" r="78"
+      fill="none" stroke="${item.color}" stroke-width="32"
+      stroke-dasharray="${length} ${Math.max(0, circumference - length)}"
+      stroke-dashoffset="${-offset}" transform="rotate(-90 110 110)">
+      <title>${escapeHtml(item.name)} ${won.format(item.value)}</title>
+    </circle>`;
+    offset += length;
+    return segment;
+  }).join('');
+  $('#asset-chart').innerHTML = `
+    <div class="asset-donut-shell">
+      <svg viewBox="0 0 220 220" aria-hidden="true">
+        <circle class="asset-chart-track" cx="110" cy="110" r="78" fill="none" stroke-width="32"></circle>
+        ${segments}
+      </svg>
+      <div class="asset-chart-center"><span>총자산</span><strong>${compactWon(totalAssets)}</strong><small>${won.format(totalAssets)}</small></div>
+    </div>`;
+  $('#asset-chart').setAttribute(
+    'aria-label',
+    allocations.map((item) => `${item.name} ${won.format(item.value)}`).join(', '),
+  );
+  $('#asset-legend').innerHTML = allocations.map((item) => {
+    const percentage = totalAssets ? item.value / totalAssets * 100 : 0;
+    return `<div class="asset-legend-row">
+      <i style="--asset-color:${item.color}" aria-hidden="true"></i>
+      <div><strong>${escapeHtml(item.name)}</strong><small>${item.key === 'cash' ? '주문 가능 현금' : item.key}</small></div>
+      <div><strong>${won.format(item.value)}</strong><small>${percentage.toFixed(1)}%</small></div>
+    </div>`;
+  }).join('');
+  $('#asset-allocation-count').textContent = `현금 + ${integer.format(positions.length)}종목`;
+
+  if (!positions.some((position) => position.ticker === state.selectedAssetTicker)) {
+    state.selectedAssetTicker = null;
+  }
+  $('#asset-position-list').innerHTML = positions.length ? positions.map((position, index) => {
+    const expanded = position.ticker === state.selectedAssetTicker;
+    const share = totalAssets ? Number(position.market_value) / totalAssets * 100 : 0;
+    const lots = position.lots || [];
+    const lotRows = lots.length ? lots.map((lot, lotIndex) => {
+      const partiallySold = lot.remaining_quantity !== lot.original_quantity;
+      const lotTitle = lot.is_average_carryover
+        ? `기존 평균단가 이월 · ${integer.format(lot.remaining_quantity)}주`
+        : `${integer.format(Math.round(lot.price))}원에 ${integer.format(lot.original_quantity)}주 매수`;
+      return `<div class="asset-lot-row">
+        <span class="asset-lot-index">${String(lotIndex + 1).padStart(2, '0')}</span>
+        <div class="asset-lot-main"><strong>${lotTitle}</strong><small>${formatTime(lot.acquired_at)}${lot.is_average_carryover ? ' · 기존 평균단가 잔여분' : ''}</small></div>
+        <div class="asset-lot-balance"><strong>${won.format(Number(lot.price) * Number(lot.remaining_quantity))}</strong><small>${partiallySold ? `현재 ${integer.format(lot.remaining_quantity)}주 보유` : '전량 보유 중'}</small></div>
+      </div>`;
+    }).join('') : '<div class="asset-lot-empty">확인할 수 있는 매수 체결분이 없습니다.</div>';
+    return `<article class="asset-position-card ${expanded ? 'expanded' : ''}">
+      <button class="asset-position-button" type="button" data-asset-ticker="${position.ticker}" aria-expanded="${expanded}">
+        <i style="--asset-color:${ASSET_COLORS[index % ASSET_COLORS.length]}" aria-hidden="true"></i>
+        <span class="asset-position-name"><strong>${escapeHtml(position.name)}</strong><small>${position.ticker}</small></span>
+        <span class="asset-position-quantity"><strong>${integer.format(position.quantity)}주</strong><small>현재가 ${integer.format(position.price)}원</small></span>
+        <span class="asset-position-value"><strong>${won.format(position.market_value)}</strong><small>총자산의 ${share.toFixed(1)}%</small></span>
+        <span class="asset-position-chevron" aria-hidden="true">⌄</span>
+      </button>
+      <div class="asset-lot-detail" ${expanded ? '' : 'hidden'}>
+        <header><div><strong>보유 중인 매수 체결분</strong><small>선택한 매도 원가 방식에 따라 잔여 수량이 달라집니다.</small></div><span>${integer.format(lots.length)}개 lot</span></header>
+        ${lotRows}
+      </div>
+    </article>`;
+  }).join('') : `<div class="asset-empty">
+    <strong>보유 중인 종목이 없습니다.</strong>
+    <span>현재 자산은 모두 현금으로 구성되어 있습니다.</span>
+  </div>`;
 }
 
 function renderStockOptions() {
@@ -559,6 +676,7 @@ function render() {
   renderRecentNews();
   renderTables();
   renderTradeHistory();
+  renderAssetOverview();
   renderStockOptions();
 }
 
@@ -624,9 +742,18 @@ function setSide(side) {
   const submit = $('#order-submit');
   submit.textContent = state.user ? (side === 'buy' ? '매수 주문' : '매도 주문') : '로그인 후 주문';
   submit.className = `primary-action ${side}`;
+  $('#cost-method-picker').hidden = side !== 'sell';
   $('#quick-order-label').textContent = side === 'buy'
     ? '주문 가능 현금 기준 빠른 주문'
     : '선택 종목 보유 수량 기준 빠른 주문';
+}
+
+function setCostMethod(costMethod) {
+  if (!['fifo', 'lifo', 'lofo'].includes(costMethod)) return;
+  state.costMethod = costMethod;
+  document.querySelectorAll('.cost-method-toggle button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.costMethod === costMethod);
+  });
 }
 
 function setMenuOpen(open) {
@@ -638,7 +765,7 @@ function setMenuOpen(open) {
 }
 
 function setView(view, { updateHash = true } = {}) {
-  const activeView = ['trading', 'news', 'trades'].includes(view) ? view : 'trading';
+  const activeView = ['trading', 'news', 'assets', 'trades'].includes(view) ? view : 'trading';
   document.querySelectorAll('.app-view').forEach((element) => {
     element.hidden = element.dataset.view !== activeView;
   });
@@ -671,10 +798,22 @@ $('#positions-table thead').addEventListener('click', (event) => {
   renderTables();
 });
 
+$('#asset-position-list').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-asset-ticker]');
+  if (!button) return;
+  state.selectedAssetTicker = state.selectedAssetTicker === button.dataset.assetTicker
+    ? null
+    : button.dataset.assetTicker;
+  renderAssetOverview();
+});
+
 $('#refresh').addEventListener('click', () => refresh());
 $('#quantity').addEventListener('input', updateEstimate);
 document.querySelectorAll('.side-toggle button').forEach((button) => {
   button.addEventListener('click', () => setSide(button.dataset.side));
+});
+document.querySelectorAll('.cost-method-toggle button').forEach((button) => {
+  button.addEventListener('click', () => setCostMethod(button.dataset.costMethod));
 });
 
 document.querySelectorAll('.quick-quantity button').forEach((button) => {
@@ -772,9 +911,13 @@ $('#order-form').addEventListener('submit', async (event) => {
       body: JSON.stringify({
         ticker: state.ticker, side: state.side,
         quantity: Number($('#quantity').value),
+        cost_method: state.costMethod,
       }),
     });
-    toast(`${result.message} · ${won.format(result.total)}`);
+    const profitText = result.realized_profit == null
+      ? ''
+      : ` · ${costMethodLabel(result.cost_method)} 실현손익 ${signedWon(result.realized_profit)}`;
+    toast(`${result.message} · ${won.format(result.total)}${profitText}`);
     await refresh();
   } catch (error) {
     if (error.status === 401) {
@@ -840,7 +983,9 @@ $('#sell-all').addEventListener('click', async () => {
   try {
     let result;
     try {
-      result = await api('/api/market/accounts/sell-all', { method: 'POST' });
+      result = await api('/api/market/accounts/sell-all', {
+        method: 'POST', body: JSON.stringify({ cost_method: state.costMethod }),
+      });
     } catch (error) {
       if (![404, 405].includes(error.status)) throw error;
       let total = 0;
@@ -851,6 +996,7 @@ $('#sell-all').addEventListener('click', async () => {
             ticker: position.ticker,
             side: 'sell',
             quantity: position.quantity,
+            cost_method: state.costMethod,
           }),
         });
         total += Number(sold.total || 0);

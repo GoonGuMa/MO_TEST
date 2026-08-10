@@ -31,6 +31,8 @@ MAX_CATCHUP_TICKS = 240
 PASSWORD_HASH_ITERATIONS = 210_000
 SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 USERNAME_PATTERN = re.compile(r"^[0-9A-Za-z가-힣_-]+$")
+COST_METHODS = {"fifo", "lifo", "lofo"}
+COST_BASIS_VERSION = "selectable-lots-v2"
 
 STOCKS = (
     ("005930", "삼성전자", "반도체", 84_000),
@@ -203,6 +205,7 @@ class MarketEngine:
                 return
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(self.db_path, timeout=10)
+            conn.row_factory = sqlite3.Row
             try:
                 conn.executescript(
                     """
@@ -247,9 +250,21 @@ class MarketEngine:
                         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
                         ticker TEXT NOT NULL, side TEXT NOT NULL, quantity INTEGER NOT NULL,
                         price INTEGER NOT NULL, total INTEGER NOT NULL, executed_at REAL NOT NULL,
+                        cost_method TEXT, cost_basis REAL, realized_profit REAL,
                         FOREIGN KEY (user_id) REFERENCES accounts(user_id) ON DELETE CASCADE
                     );
                     CREATE INDEX IF NOT EXISTS idx_trades_user_id ON trades(user_id, id DESC);
+                    CREATE TABLE IF NOT EXISTS position_lots (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id TEXT NOT NULL, ticker TEXT NOT NULL,
+                        trade_id INTEGER, original_quantity INTEGER NOT NULL,
+                        remaining_quantity INTEGER NOT NULL, price REAL NOT NULL,
+                        acquired_at REAL NOT NULL,
+                        FOREIGN KEY (user_id) REFERENCES accounts(user_id) ON DELETE CASCADE,
+                        FOREIGN KEY (trade_id) REFERENCES trades(id) ON DELETE CASCADE
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_position_lots_account
+                        ON position_lots(user_id, ticker, remaining_quantity);
                     CREATE TABLE IF NOT EXISTS users (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         username TEXT NOT NULL,
@@ -373,6 +388,26 @@ class MarketEngine:
                         (json.dumps("035720"), json.dumps("105560")),
                     )
                     conn.execute("DELETE FROM market_state WHERE ticker = ?", ("035720",))
+                trade_columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(trades)").fetchall()
+                }
+                for column, definition in (
+                    ("cost_method", "TEXT"),
+                    ("cost_basis", "REAL"),
+                    ("realized_profit", "REAL"),
+                ):
+                    if column not in trade_columns:
+                        conn.execute(f"ALTER TABLE trades ADD COLUMN {column} {definition}")
+                cost_basis_version = conn.execute(
+                    "SELECT value FROM market_meta WHERE key = 'cost_basis_version'"
+                ).fetchone()
+                if not cost_basis_version or cost_basis_version[0] != COST_BASIS_VERSION:
+                    self._migrate_legacy_cost_basis(conn)
+                    conn.execute(
+                        """INSERT INTO market_meta(key, value) VALUES ('cost_basis_version', ?)
+                           ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                        (COST_BASIS_VERSION,),
+                    )
                 now = time.time()
                 for ticker, name, sector, price in STOCKS:
                     conn.execute(
@@ -438,6 +473,157 @@ class MarketEngine:
             finally:
                 conn.close()
             self._initialized = True
+
+    @staticmethod
+    def _migrate_legacy_cost_basis(conn: sqlite3.Connection) -> None:
+        """Replay trades, preserving legacy average sells and selectable lot sells."""
+        lots_by_position: dict[tuple[str, str], list[dict]] = {}
+        trades = conn.execute(
+            """SELECT id, user_id, ticker, side, quantity, price, total,
+                      executed_at, cost_method
+               FROM trades ORDER BY id"""
+        ).fetchall()
+        for trade in trades:
+            key = (trade["user_id"], trade["ticker"])
+            quantity = int(trade["quantity"])
+            lots = lots_by_position.setdefault(key, [])
+            if trade["side"] == "buy":
+                lots.append({
+                    "trade_id": trade["id"], "original_quantity": quantity,
+                    "remaining_quantity": quantity, "price": float(trade["price"]),
+                    "acquired_at": float(trade["executed_at"]), "id": trade["id"],
+                })
+                continue
+
+            held = sum(lot["remaining_quantity"] for lot in lots)
+            method = str(trade["cost_method"] or "avg").lower()
+            method = method if method in COST_METHODS else "avg"
+            if method == "avg":
+                average = (
+                    sum(lot["remaining_quantity"] * lot["price"] for lot in lots) / held
+                    if held else 0.0
+                )
+                cost_basis = average * quantity
+                remaining = max(0, held - quantity)
+                lots[:] = ([{
+                    "trade_id": None, "original_quantity": remaining,
+                    "remaining_quantity": remaining, "price": average,
+                    "acquired_at": float(trade["executed_at"]), "id": trade["id"],
+                }] if remaining else [])
+            else:
+                ordering = {
+                    "fifo": lambda lot: (lot["acquired_at"], lot["id"]),
+                    "lifo": lambda lot: (-lot["acquired_at"], -lot["id"]),
+                    "lofo": lambda lot: (lot["price"], lot["acquired_at"], lot["id"]),
+                }[method]
+                remaining, cost_basis = quantity, 0.0
+                for lot in sorted(lots, key=ordering):
+                    if remaining == 0:
+                        break
+                    consumed = min(remaining, lot["remaining_quantity"])
+                    cost_basis += consumed * lot["price"]
+                    lot["remaining_quantity"] -= consumed
+                    remaining -= consumed
+                lots[:] = [lot for lot in lots if lot["remaining_quantity"] > 0]
+            realized_profit = float(trade["total"]) - cost_basis
+            conn.execute(
+                """UPDATE trades SET cost_method = ?, cost_basis = ?,
+                   realized_profit = ? WHERE id = ?""",
+                (method, cost_basis, realized_profit, trade["id"]),
+            )
+
+        conn.execute("DELETE FROM position_lots")
+        positions = conn.execute(
+            """SELECT p.user_id, p.ticker, p.quantity, p.avg_price, a.created_at
+               FROM positions p JOIN accounts a ON a.user_id = p.user_id
+               WHERE p.quantity > 0"""
+        ).fetchall()
+        for position in positions:
+            key = (position["user_id"], position["ticker"])
+            lots = lots_by_position.get(key, [])
+            if sum(lot["remaining_quantity"] for lot in lots) != int(position["quantity"]):
+                lots = [{
+                    "trade_id": None, "original_quantity": int(position["quantity"]),
+                    "remaining_quantity": int(position["quantity"]),
+                    "price": float(position["avg_price"]),
+                    "acquired_at": float(position["created_at"]),
+                }]
+            for lot in lots:
+                conn.execute(
+                    """INSERT INTO position_lots
+                       (user_id, ticker, trade_id, original_quantity, remaining_quantity,
+                        price, acquired_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        position["user_id"], position["ticker"], lot["trade_id"],
+                        lot["original_quantity"], lot["remaining_quantity"],
+                        lot["price"], lot["acquired_at"],
+                    ),
+                )
+
+    @staticmethod
+    def _normalize_cost_method(cost_method: str) -> str:
+        method = str(cost_method or "").lower()
+        if method not in COST_METHODS:
+            raise MarketError(422, "매도 원가 방식은 FIFO, LIFO, LOFO 중에서 선택하세요.")
+        return method
+
+    @staticmethod
+    def _consume_lots(
+        conn: sqlite3.Connection, user_id: str, ticker: str,
+        quantity: int, cost_method: str,
+    ) -> float:
+        order_by = {
+            "fifo": "acquired_at ASC, id ASC",
+            "lifo": "acquired_at DESC, id DESC",
+            "lofo": "price ASC, acquired_at ASC, id ASC",
+        }[cost_method]
+        lots = conn.execute(
+            f"""SELECT id, remaining_quantity, price FROM position_lots
+                WHERE user_id = ? AND ticker = ? AND remaining_quantity > 0
+                ORDER BY {order_by}""",
+            (user_id, ticker),
+        ).fetchall()
+        remaining, cost_basis = quantity, 0.0
+        for lot in lots:
+            if remaining == 0:
+                break
+            consumed = min(remaining, int(lot["remaining_quantity"]))
+            cost_basis += consumed * float(lot["price"])
+            conn.execute(
+                "UPDATE position_lots SET remaining_quantity = remaining_quantity - ? WHERE id = ?",
+                (consumed, lot["id"]),
+            )
+            remaining -= consumed
+        if remaining:
+            raise MarketError(409, "매수 체결 수량과 보유 수량이 일치하지 않습니다.")
+        return cost_basis
+
+    @staticmethod
+    def _sync_position_from_lots(
+        conn: sqlite3.Connection, user_id: str, ticker: str,
+    ) -> None:
+        lot_total = conn.execute(
+            """SELECT COALESCE(SUM(remaining_quantity), 0) AS quantity,
+                      COALESCE(SUM(remaining_quantity * price), 0) AS cost
+               FROM position_lots
+               WHERE user_id = ? AND ticker = ? AND remaining_quantity > 0""",
+            (user_id, ticker),
+        ).fetchone()
+        quantity = int(lot_total["quantity"])
+        if quantity == 0:
+            conn.execute(
+                "DELETE FROM positions WHERE user_id = ? AND ticker = ?", (user_id, ticker)
+            )
+            return
+        average = float(lot_total["cost"]) / quantity
+        conn.execute(
+            """INSERT INTO positions(user_id, ticker, quantity, avg_price)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(user_id, ticker) DO UPDATE SET
+                 quantity = excluded.quantity, avg_price = excluded.avg_price""",
+            (user_id, ticker, quantity, average),
+        )
 
     def _virtual_flow(self, price: int, *, news_impact: float | None = None) -> tuple[int, int, float]:
         """Generate aggregate order flow and derive its price pressure."""
@@ -608,12 +794,27 @@ class MarketEngine:
             cost = float(row["avg_price"]) * int(row["quantity"])
             profit = market_value - cost
             stock_value += market_value
+            lots = conn.execute(
+                """SELECT trade_id, original_quantity, remaining_quantity, price, acquired_at
+                   FROM position_lots
+                   WHERE user_id = ? AND ticker = ? AND remaining_quantity > 0
+                   ORDER BY acquired_at DESC, id DESC""",
+                (user_id, row["ticker"]),
+            ).fetchall()
             positions.append({
                 "ticker": row["ticker"], "name": row["name"],
                 "quantity": row["quantity"], "avg_price": round(row["avg_price"], 2),
                 "price": row["price"], "market_value": market_value,
                 "profit": round(profit),
                 "profit_pct": round(profit / cost * 100, 2) if cost else 0,
+                "lots": [{
+                    "trade_id": lot["trade_id"],
+                    "original_quantity": int(lot["original_quantity"]),
+                    "remaining_quantity": int(lot["remaining_quantity"]),
+                    "price": round(float(lot["price"]), 2),
+                    "acquired_at": _iso(float(lot["acquired_at"])),
+                    "is_average_carryover": lot["trade_id"] is None,
+                } for lot in lots],
             })
         cash, initial = int(account["cash"]), int(account["initial_cash"])
         total = cash + stock_value
@@ -817,14 +1018,30 @@ class MarketEngine:
             "trades": [{
                 "id": row["id"], "ticker": row["ticker"], "name": row["name"],
                 "side": row["side"], "quantity": row["quantity"], "price": row["price"],
-                "total": row["total"], "executed_at": _iso(row["executed_at"]),
+                "total": row["total"], "cost_method": row["cost_method"],
+                "cost_basis": (
+                    round(float(row["cost_basis"])) if row["cost_basis"] is not None else None
+                ),
+                "realized_profit": (
+                    round(float(row["realized_profit"]))
+                    if row["realized_profit"] is not None else None
+                ),
+                "realized_profit_pct": (
+                    round(float(row["realized_profit"]) / float(row["cost_basis"]) * 100, 2)
+                    if row["cost_basis"] else None
+                ),
+                "executed_at": _iso(row["executed_at"]),
             } for row in trades],
         }
 
-    def order(self, user_id: str, ticker: str, side: str, quantity: int) -> dict:
+    def order(
+        self, user_id: str, ticker: str, side: str, quantity: int,
+        cost_method: str = "lofo",
+    ) -> dict:
         self._validate_user_id(user_id)
         if side not in {"buy", "sell"} or quantity < 1:
             raise MarketError(422, "주문 값이 올바르지 않습니다.")
+        selected_method = self._normalize_cost_method(cost_method) if side == "sell" else None
         now = time.time()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -839,43 +1056,59 @@ class MarketEngine:
                 (user_id, ticker),
             ).fetchone()
             price, total = int(stock["price"]), int(stock["price"]) * quantity
+            cost_basis = realized_profit = None
             if side == "buy":
                 if int(account["cash"]) < total:
                     raise MarketError(400, "주문 가능 현금이 부족합니다.")
-                old_qty = int(position["quantity"]) if position else 0
-                old_avg = float(position["avg_price"]) if position else 0
-                new_qty = old_qty + quantity
-                new_avg = (old_avg * old_qty + total) / new_qty
                 conn.execute("UPDATE accounts SET cash = cash - ? WHERE user_id = ?", (total, user_id))
-                conn.execute(
-                    """INSERT INTO positions(user_id, ticker, quantity, avg_price) VALUES (?, ?, ?, ?)
-                       ON CONFLICT(user_id, ticker) DO UPDATE SET
-                         quantity = excluded.quantity, avg_price = excluded.avg_price""",
-                    (user_id, ticker, new_qty, new_avg),
+                cursor = conn.execute(
+                    """INSERT INTO trades
+                       (user_id, ticker, side, quantity, price, total, executed_at,
+                        cost_method, cost_basis, realized_profit)
+                       VALUES (?, ?, 'buy', ?, ?, ?, ?, NULL, NULL, NULL)""",
+                    (user_id, ticker, quantity, price, total, now),
                 )
+                conn.execute(
+                    """INSERT INTO position_lots
+                       (user_id, ticker, trade_id, original_quantity, remaining_quantity,
+                        price, acquired_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (user_id, ticker, cursor.lastrowid, quantity, quantity, price, now),
+                )
+                self._sync_position_from_lots(conn, user_id, ticker)
             else:
                 held = int(position["quantity"]) if position else 0
                 if held < quantity:
                     raise MarketError(400, "보유 수량이 부족합니다.")
-                remaining = held - quantity
+                cost_basis = self._consume_lots(
+                    conn, user_id, ticker, quantity, selected_method
+                )
+                realized_profit = total - cost_basis
                 conn.execute("UPDATE accounts SET cash = cash + ? WHERE user_id = ?", (total, user_id))
-                if remaining:
-                    conn.execute(
-                        "UPDATE positions SET quantity = ? WHERE user_id = ? AND ticker = ?",
-                        (remaining, user_id, ticker),
-                    )
-                else:
-                    conn.execute("DELETE FROM positions WHERE user_id = ? AND ticker = ?", (user_id, ticker))
-            cursor = conn.execute(
-                """INSERT INTO trades(user_id, ticker, side, quantity, price, total, executed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (user_id, ticker, side, quantity, price, total, now),
-            )
+                self._sync_position_from_lots(conn, user_id, ticker)
+                cursor = conn.execute(
+                    """INSERT INTO trades
+                       (user_id, ticker, side, quantity, price, total, executed_at,
+                        cost_method, cost_basis, realized_profit)
+                       VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        user_id, ticker, quantity, price, total, now, selected_method,
+                        cost_basis, realized_profit,
+                    ),
+                )
             portfolio = self._portfolio(conn, user_id)
             conn.commit()
         return {
             "message": f"{stock['name']} {quantity:,}주 {('매수' if side == 'buy' else '매도')} 체결",
             "trade_id": cursor.lastrowid, "price": price, "total": total,
+            "cost_method": selected_method,
+            "cost_basis": round(cost_basis) if cost_basis is not None else None,
+            "realized_profit": (
+                round(realized_profit) if realized_profit is not None else None
+            ),
+            "realized_profit_pct": (
+                round(realized_profit / cost_basis * 100, 2) if cost_basis else None
+            ),
             "portfolio": portfolio,
         }
 
@@ -925,6 +1158,7 @@ class MarketEngine:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._ensure_account(conn, user_id, now)
+            conn.execute("DELETE FROM position_lots WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM trades WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM positions WHERE user_id = ?", (user_id,))
             conn.execute(
@@ -935,9 +1169,10 @@ class MarketEngine:
             conn.commit()
         return {"message": "계좌를 초기화했습니다.", "portfolio": portfolio}
 
-    def sell_all(self, user_id: str) -> dict:
+    def sell_all(self, user_id: str, cost_method: str = "lofo") -> dict:
         """Sell every position at the prices captured in one transaction."""
         self._validate_user_id(user_id)
+        selected_method = self._normalize_cost_method(cost_method)
         now = time.time()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -951,21 +1186,34 @@ class MarketEngine:
             if not positions:
                 raise MarketError(400, "매도할 보유 종목이 없습니다.")
             total = 0
+            total_realized_profit = 0.0
             for position in positions:
                 quantity, price = int(position["quantity"]), int(position["price"])
                 proceeds = quantity * price
+                cost_basis = self._consume_lots(
+                    conn, user_id, position["ticker"], quantity, selected_method
+                )
+                realized_profit = proceeds - cost_basis
                 total += proceeds
+                total_realized_profit += realized_profit
                 conn.execute(
-                    """INSERT INTO trades(user_id, ticker, side, quantity, price, total, executed_at)
-                       VALUES (?, ?, 'sell', ?, ?, ?, ?)""",
-                    (user_id, position["ticker"], quantity, price, proceeds, now),
+                    """INSERT INTO trades
+                       (user_id, ticker, side, quantity, price, total, executed_at,
+                        cost_method, cost_basis, realized_profit)
+                       VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        user_id, position["ticker"], quantity, price, proceeds, now,
+                        selected_method, cost_basis, realized_profit,
+                    ),
                 )
             conn.execute("UPDATE accounts SET cash = cash + ? WHERE user_id = ?", (total, user_id))
             conn.execute("DELETE FROM positions WHERE user_id = ?", (user_id,))
             portfolio = self._portfolio(conn, user_id)
             conn.commit()
         return {"message": f"보유 종목 {len(positions)}개를 모두 매도했습니다.",
-                "sold_count": len(positions), "total": total, "portfolio": portfolio}
+                "sold_count": len(positions), "total": total,
+                "cost_method": selected_method,
+                "realized_profit": round(total_realized_profit), "portfolio": portfolio}
 
     def randomize_market(self) -> dict:
         """Start every quote from a fresh price near its configured baseline."""

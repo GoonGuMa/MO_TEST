@@ -4,6 +4,7 @@ import asyncio
 import random
 import sqlite3
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -237,6 +238,83 @@ def test_buy_and_sell_update_cash_and_position(market_app):
     }, cookies=cookies)
     assert rejected.status_code == 400
     assert "보유 수량" in rejected.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("cost_method", "expected_cost", "expected_profit", "remaining_average"),
+    (
+        ("fifo", 32_000, 7_000, 68_000 / 6),
+        ("lifo", 33_000, 6_000, 67_000 / 6),
+        ("lofo", 31_000, 8_000, 69_000 / 6),
+    ),
+)
+def test_sell_cost_method_consumes_the_selected_purchase_lots(
+    market_app, cost_method, expected_cost, expected_profit, remaining_average,
+):
+    app, database = market_app
+    cookies, _ = register(app, username=f"method_{cost_method}")
+    snapshot(app, cookies=cookies)
+
+    for price, quantity in ((10_000, 2), (12_000, 3), (11_000, 4)):
+        with sqlite3.connect(database) as conn:
+            conn.execute(
+                "UPDATE market_state SET price = ?, previous_price = ? WHERE ticker = '005930'",
+                (price, price),
+            )
+            conn.execute(
+                "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'",
+                (str(time.time()),),
+            )
+            conn.commit()
+        response = request(app, "POST", "/api/market/orders", json={
+            "ticker": "005930", "side": "buy", "quantity": quantity,
+        }, cookies=cookies)
+        assert response.status_code == 200
+
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE market_state SET price = 13000, previous_price = 13000 "
+            "WHERE ticker = '005930'"
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'",
+            (str(time.time()),),
+        )
+        conn.commit()
+    response = request(app, "POST", "/api/market/orders", json={
+        "ticker": "005930", "side": "sell", "quantity": 3,
+        "cost_method": cost_method,
+    }, cookies=cookies)
+    assert response.status_code == 200
+    result = response.json()
+    assert result["cost_method"] == cost_method
+    assert result["cost_basis"] == expected_cost
+    assert result["realized_profit"] == expected_profit
+    assert result["realized_profit_pct"] == round(expected_profit / expected_cost * 100, 2)
+    assert result["portfolio"]["positions"][0]["quantity"] == 6
+    assert result["portfolio"]["positions"][0]["avg_price"] == round(remaining_average, 2)
+    api_lots = result["portfolio"]["positions"][0]["lots"]
+    assert sum(lot["remaining_quantity"] for lot in api_lots) == 6
+    assert all({"original_quantity", "price", "acquired_at"} <= lot.keys() for lot in api_lots)
+
+    recorded = snapshot(app, cookies=cookies)["trades"][0]
+    assert recorded["cost_method"] == cost_method
+    assert recorded["cost_basis"] == expected_cost
+    assert recorded["realized_profit"] == expected_profit
+    with sqlite3.connect(database) as conn:
+        lots = conn.execute(
+            """SELECT original_quantity, remaining_quantity, price
+               FROM position_lots WHERE remaining_quantity > 0 ORDER BY id"""
+        ).fetchall()
+    assert sum(row[1] for row in lots) == 6
+
+
+def test_assets_view_is_available_from_the_main_menu():
+    html = (Path(__file__).parents[1] / "app" / "static" / "index.html").read_text()
+    assert 'data-view-target="assets"' in html
+    assert 'id="view-assets"' in html
+    assert 'id="asset-chart"' in html
+    assert 'id="asset-position-list"' in html
 
 
 def test_news_admin_key_is_enforced(market_app, monkeypatch):

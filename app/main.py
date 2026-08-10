@@ -22,6 +22,11 @@ class OrderRequest(BaseModel):
     ticker: str = Field(pattern=r"^\d{6}$")
     side: str = Field(pattern="^(buy|sell)$")
     quantity: int = Field(ge=1)
+    cost_method: str = Field(default="lofo", pattern="^(fifo|lifo|lofo)$")
+
+
+class SellAllRequest(BaseModel):
+    cost_method: str = Field(default="lofo", pattern="^(fifo|lifo|lofo)$")
 
 
 class AuthRequest(BaseModel):
@@ -117,6 +122,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             ticker=request.ticker,
             side=request.side,
             quantity=request.quantity,
+            cost_method=request.cost_method,
         )
 
     @app.post("/api/market/news")
@@ -137,8 +143,14 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         return engine.reset_account(engine.account_id_for_user(user["id"]))
 
     @app.post("/api/market/accounts/sell-all")
-    async def sell_all(user: dict = Depends(current_user)) -> dict:
-        return engine.sell_all(engine.account_id_for_user(user["id"]))
+    async def sell_all(
+        payload: SellAllRequest | None = None,
+        user: dict = Depends(current_user),
+    ) -> dict:
+        return engine.sell_all(
+            engine.account_id_for_user(user["id"]),
+            cost_method=payload.cost_method if payload else "lofo",
+        )
 
     @app.post("/api/market/randomize")
     async def randomize_market(_: dict = Depends(current_user)) -> dict:
