@@ -240,6 +240,132 @@ def test_buy_and_sell_update_cash_and_position(market_app):
     assert "보유 수량" in rejected.json()["detail"]
 
 
+def test_reserved_buy_locks_cash_and_executes_at_the_first_matching_price(market_app):
+    app, database = market_app
+    cookies, _ = register(app, username="reserved_buyer")
+    current_price = stock(snapshot(app, cookies=cookies))["price"]
+    target_price = current_price - 1_000
+
+    response = request(app, "POST", "/api/market/reserved-orders", json={
+        "ticker": "005930", "side": "buy", "quantity": 10,
+        "target_price": target_price,
+    }, cookies=cookies)
+    assert response.status_code == 201
+    assert response.json()["status"] == "pending"
+
+    pending = snapshot(app, cookies=cookies)
+    assert pending["reserved_orders"][0]["target_price"] == target_price
+    assert pending["portfolio"]["cash"] == 100_000_000
+    assert pending["portfolio"]["reserved_cash"] == target_price * 10
+    assert pending["portfolio"]["available_cash"] == 100_000_000 - target_price * 10
+
+    execution_price = target_price - 10
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE market_state SET price = ?, previous_price = ? WHERE ticker = '005930'",
+            (execution_price, execution_price),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'", (str(time.time()),)
+        )
+        conn.commit()
+
+    executed = snapshot(app, cookies=cookies)
+    assert executed["reserved_orders"] == []
+    assert executed["trades"][0]["side"] == "buy"
+    assert executed["trades"][0]["price"] == execution_price
+    assert executed["portfolio"]["positions"][0]["quantity"] == 10
+    assert executed["portfolio"]["cash"] == 100_000_000 - execution_price * 10
+    assert executed["portfolio"]["reserved_cash"] == 0
+
+
+def test_reserved_sell_locks_shares_and_can_be_cancelled(market_app):
+    app, database = market_app
+    cookies, _ = register(app, username="reserved_seller")
+    current_price = stock(snapshot(app, cookies=cookies))["price"]
+    assert request(app, "POST", "/api/market/orders", json={
+        "ticker": "005930", "side": "buy", "quantity": 10,
+    }, cookies=cookies).status_code == 200
+
+    reserved = request(app, "POST", "/api/market/reserved-orders", json={
+        "ticker": "005930", "side": "sell", "quantity": 7,
+        "target_price": current_price + 1_000, "cost_method": "fifo",
+    }, cookies=cookies)
+    assert reserved.status_code == 201
+    assert reserved.json()["status"] == "pending"
+    portfolio = reserved.json()["portfolio"]
+    assert portfolio["positions"][0]["reserved_quantity"] == 7
+    assert portfolio["positions"][0]["available_quantity"] == 3
+
+    rejected = request(app, "POST", "/api/market/orders", json={
+        "ticker": "005930", "side": "sell", "quantity": 4,
+    }, cookies=cookies)
+    assert rejected.status_code == 400
+
+    cancelled = request(
+        app, "DELETE", f"/api/market/reserved-orders/{reserved.json()['order_id']}",
+        cookies=cookies,
+    )
+    assert cancelled.status_code == 200
+    after = snapshot(app, cookies=cookies)
+    assert after["reserved_orders"] == []
+    assert after["portfolio"]["positions"][0]["available_quantity"] == 10
+
+    second = request(app, "POST", "/api/market/reserved-orders", json={
+        "ticker": "005930", "side": "sell", "quantity": 7,
+        "target_price": current_price + 1_000, "cost_method": "fifo",
+    }, cookies=cookies)
+    assert second.status_code == 201
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE market_state SET price = ?, previous_price = ? WHERE ticker = '005930'",
+            (current_price + 1_010, current_price + 1_010),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'", (str(time.time()),)
+        )
+        conn.commit()
+    executed = snapshot(app, cookies=cookies)
+    assert executed["reserved_orders"] == []
+    assert executed["trades"][0]["side"] == "sell"
+    assert executed["trades"][0]["quantity"] == 7
+    assert executed["trades"][0]["cost_method"] == "fifo"
+    assert executed["portfolio"]["positions"][0]["quantity"] == 3
+
+
+def test_reserved_order_executes_immediately_when_price_already_matches(market_app):
+    app, _ = market_app
+    cookies, _ = register(app, username="instant_reserved")
+    current_price = stock(snapshot(app, cookies=cookies))["price"]
+    response = request(app, "POST", "/api/market/reserved-orders", json={
+        "ticker": "005930", "side": "buy", "quantity": 2,
+        "target_price": current_price,
+    }, cookies=cookies)
+    assert response.status_code == 201
+    assert response.json()["status"] == "executed"
+    assert response.json()["trade_id"] is not None
+    assert response.json()["portfolio"]["positions"][0]["quantity"] == 2
+
+
+def test_order_panel_has_separate_immediate_and_reserved_modes():
+    root = Path(__file__).parents[1]
+    html = (root / "app" / "static" / "index.html").read_text()
+    css = (root / "app" / "static" / "styles.css").read_text()
+    script = (root / "app" / "static" / "app.js").read_text()
+    for mode in ("buy", "sell", "reserved-buy", "reserved-sell"):
+        assert f'data-order-mode="{mode}"' in html
+    assert 'id="reserve-order-submit"' not in html
+    assert ".order-mode-toggle button.active.buy" in css
+    assert ".order-mode-toggle button.active.sell" in css
+    assert "state.orderType === 'reserved'" in script
+    assert "평단가 ${integer.format(Math.round(position.avg_price))}원" in script
+    assert 'class="reservation buy"></i>예수' in html
+    assert 'class="reservation sell"></i>예도' in html
+    assert ".reservation-price-level.buy line" in css
+    assert ".reservation-price-level.sell line" in css
+    assert "const reservationLines = reservationLevels.map" in script
+
+
 @pytest.mark.parametrize(
     ("cost_method", "expected_cost", "expected_profit", "remaining_average"),
     (

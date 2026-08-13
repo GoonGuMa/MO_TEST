@@ -254,6 +254,21 @@ class MarketEngine:
                         FOREIGN KEY (user_id) REFERENCES accounts(user_id) ON DELETE CASCADE
                     );
                     CREATE INDEX IF NOT EXISTS idx_trades_user_id ON trades(user_id, id DESC);
+                    CREATE TABLE IF NOT EXISTS reserved_orders (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id TEXT NOT NULL, ticker TEXT NOT NULL,
+                        side TEXT NOT NULL, quantity INTEGER NOT NULL,
+                        target_price INTEGER NOT NULL, cost_method TEXT,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        created_at REAL NOT NULL, resolved_at REAL,
+                        trade_id INTEGER, failure_reason TEXT,
+                        FOREIGN KEY (user_id) REFERENCES accounts(user_id) ON DELETE CASCADE,
+                        FOREIGN KEY (trade_id) REFERENCES trades(id) ON DELETE SET NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_reserved_orders_pending
+                        ON reserved_orders(status, ticker, id);
+                    CREATE INDEX IF NOT EXISTS idx_reserved_orders_user
+                        ON reserved_orders(user_id, status, id DESC);
                     CREATE TABLE IF NOT EXISTS position_lots (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_id TEXT NOT NULL, ticker TEXT NOT NULL,
@@ -625,6 +640,125 @@ class MarketEngine:
             (user_id, ticker, quantity, average),
         )
 
+    @staticmethod
+    def _reserved_buy_total(conn: sqlite3.Connection, user_id: str) -> int:
+        row = conn.execute(
+            """SELECT COALESCE(SUM(target_price * quantity), 0) AS total
+               FROM reserved_orders WHERE user_id = ? AND status = 'pending'
+               AND side = 'buy'""",
+            (user_id,),
+        ).fetchone()
+        return int(row["total"])
+
+    @staticmethod
+    def _reserved_sell_quantity(
+        conn: sqlite3.Connection, user_id: str, ticker: str,
+    ) -> int:
+        row = conn.execute(
+            """SELECT COALESCE(SUM(quantity), 0) AS quantity
+               FROM reserved_orders WHERE user_id = ? AND ticker = ?
+               AND status = 'pending' AND side = 'sell'""",
+            (user_id, ticker),
+        ).fetchone()
+        return int(row["quantity"])
+
+    def _execute_order(
+        self, conn: sqlite3.Connection, *, user_id: str, ticker: str,
+        side: str, quantity: int, cost_method: str | None, executed_at: float,
+    ) -> dict:
+        stock = conn.execute(
+            "SELECT * FROM market_state WHERE ticker = ?", (ticker,)
+        ).fetchone()
+        if not stock:
+            raise MarketError(404, "존재하지 않는 종목입니다.")
+        account = conn.execute(
+            "SELECT cash FROM accounts WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        position = conn.execute(
+            "SELECT quantity FROM positions WHERE user_id = ? AND ticker = ?",
+            (user_id, ticker),
+        ).fetchone()
+        price, total = int(stock["price"]), int(stock["price"]) * quantity
+        selected_method = cost_method if side == "sell" else None
+        cost_basis = realized_profit = None
+        if side == "buy":
+            if int(account["cash"]) < total:
+                raise MarketError(400, "주문 가능 현금이 부족합니다.")
+            conn.execute(
+                "UPDATE accounts SET cash = cash - ? WHERE user_id = ?", (total, user_id)
+            )
+            cursor = conn.execute(
+                """INSERT INTO trades
+                   (user_id, ticker, side, quantity, price, total, executed_at,
+                    cost_method, cost_basis, realized_profit)
+                   VALUES (?, ?, 'buy', ?, ?, ?, ?, NULL, NULL, NULL)""",
+                (user_id, ticker, quantity, price, total, executed_at),
+            )
+            conn.execute(
+                """INSERT INTO position_lots
+                   (user_id, ticker, trade_id, original_quantity, remaining_quantity,
+                    price, acquired_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, ticker, cursor.lastrowid, quantity, quantity, price, executed_at),
+            )
+            self._sync_position_from_lots(conn, user_id, ticker)
+        else:
+            held = int(position["quantity"]) if position else 0
+            if held < quantity:
+                raise MarketError(400, "보유 수량이 부족합니다.")
+            cost_basis = self._consume_lots(
+                conn, user_id, ticker, quantity, str(selected_method)
+            )
+            realized_profit = total - cost_basis
+            conn.execute(
+                "UPDATE accounts SET cash = cash + ? WHERE user_id = ?", (total, user_id)
+            )
+            self._sync_position_from_lots(conn, user_id, ticker)
+            cursor = conn.execute(
+                """INSERT INTO trades
+                   (user_id, ticker, side, quantity, price, total, executed_at,
+                    cost_method, cost_basis, realized_profit)
+                   VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    user_id, ticker, quantity, price, total, executed_at, selected_method,
+                    cost_basis, realized_profit,
+                ),
+            )
+        return {
+            "stock": stock, "trade_id": cursor.lastrowid, "price": price, "total": total,
+            "cost_method": selected_method, "cost_basis": cost_basis,
+            "realized_profit": realized_profit,
+        }
+
+    def _process_reserved_orders(self, conn: sqlite3.Connection, now: float) -> None:
+        orders = conn.execute(
+            """SELECT r.* FROM reserved_orders r
+               JOIN market_state m ON m.ticker = r.ticker
+               WHERE r.status = 'pending'
+                 AND ((r.side = 'buy' AND m.price <= r.target_price)
+                   OR (r.side = 'sell' AND m.price >= r.target_price))
+               ORDER BY r.id"""
+        ).fetchall()
+        for order in orders:
+            try:
+                result = self._execute_order(
+                    conn, user_id=order["user_id"], ticker=order["ticker"],
+                    side=order["side"], quantity=int(order["quantity"]),
+                    cost_method=order["cost_method"], executed_at=now,
+                )
+            except MarketError as exc:
+                conn.execute(
+                    """UPDATE reserved_orders SET status = 'failed', resolved_at = ?,
+                       failure_reason = ? WHERE id = ? AND status = 'pending'""",
+                    (now, exc.message, order["id"]),
+                )
+                continue
+            conn.execute(
+                """UPDATE reserved_orders SET status = 'executed', resolved_at = ?,
+                   trade_id = ? WHERE id = ? AND status = 'pending'""",
+                (now, result["trade_id"], order["id"]),
+            )
+
     def _virtual_flow(self, price: int, *, news_impact: float | None = None) -> tuple[int, int, float]:
         """Generate aggregate order flow and derive its price pressure."""
         baseline_volume = max(100, int((4_000_000_000 / price) * self.rng.uniform(0.85, 1.15)))
@@ -743,6 +877,7 @@ class MarketEngine:
         for event_at, event_type, news_event in sorted(scheduled_events, key=lambda item: item[0]):
             if event_type == "news":
                 self._apply_news_event(conn, news_event, now)
+                self._process_reserved_orders(conn, event_at)
                 continue
             for stock in conn.execute("SELECT ticker, price FROM market_state").fetchall():
                 old_price = int(stock["price"])
@@ -762,6 +897,8 @@ class MarketEngine:
                     (stock["ticker"], new_price, actual_change, buy_volume, sell_volume,
                      buy_volume + sell_volume, event_at),
                 )
+            self._process_reserved_orders(conn, event_at)
+        self._process_reserved_orders(conn, now)
         new_last_tick = last_tick + tick_count * TICK_SECONDS
         conn.execute(
             "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'",
@@ -801,9 +938,14 @@ class MarketEngine:
                    ORDER BY acquired_at DESC, id DESC""",
                 (user_id, row["ticker"]),
             ).fetchall()
+            reserved_quantity = MarketEngine._reserved_sell_quantity(
+                conn, user_id, row["ticker"]
+            )
             positions.append({
                 "ticker": row["ticker"], "name": row["name"],
                 "quantity": row["quantity"], "avg_price": round(row["avg_price"], 2),
+                "reserved_quantity": reserved_quantity,
+                "available_quantity": max(0, int(row["quantity"]) - reserved_quantity),
                 "price": row["price"], "market_value": market_value,
                 "profit": round(profit),
                 "profit_pct": round(profit / cost * 100, 2) if cost else 0,
@@ -817,9 +959,12 @@ class MarketEngine:
                 } for lot in lots],
             })
         cash, initial = int(account["cash"]), int(account["initial_cash"])
+        reserved_cash = MarketEngine._reserved_buy_total(conn, user_id)
         total = cash + stock_value
         return {
-            "user_id": user_id, "cash": cash, "stock_value": stock_value,
+            "user_id": user_id, "cash": cash,
+            "reserved_cash": reserved_cash, "available_cash": max(0, cash - reserved_cash),
+            "stock_value": stock_value,
             "total_assets": total, "total_profit": total - initial,
             "total_profit_pct": round((total / initial - 1) * 100, 2),
             "positions": positions,
@@ -980,6 +1125,13 @@ class MarketEngine:
                 """SELECT t.*, m.name FROM trades t JOIN market_state m ON m.ticker = t.ticker
                    WHERE t.user_id = ? ORDER BY t.id DESC""", (user_id,)
             ).fetchall()
+            reserved_orders = conn.execute(
+                """SELECT r.*, m.name, m.price AS current_price
+                   FROM reserved_orders r JOIN market_state m ON m.ticker = r.ticker
+                   WHERE r.user_id = ? AND r.status = 'pending'
+                   ORDER BY r.id DESC""",
+                (user_id,),
+            ).fetchall()
             portfolio = self._portfolio(conn, user_id)
             conn.commit()
         return {
@@ -1032,6 +1184,14 @@ class MarketEngine:
                 ),
                 "executed_at": _iso(row["executed_at"]),
             } for row in trades],
+            "reserved_orders": [{
+                "id": row["id"], "ticker": row["ticker"], "name": row["name"],
+                "side": row["side"], "quantity": row["quantity"],
+                "target_price": row["target_price"],
+                "current_price": row["current_price"],
+                "cost_method": row["cost_method"], "status": row["status"],
+                "created_at": _iso(row["created_at"]),
+            } for row in reserved_orders],
         }
 
     def order(
@@ -1047,60 +1207,40 @@ class MarketEngine:
             conn.execute("BEGIN IMMEDIATE")
             self._advance(conn, now)
             self._ensure_account(conn, user_id, now)
-            stock = conn.execute("SELECT * FROM market_state WHERE ticker = ?", (ticker,)).fetchone()
-            if not stock:
-                raise MarketError(404, "존재하지 않는 종목입니다.")
-            account = conn.execute("SELECT cash FROM accounts WHERE user_id = ?", (user_id,)).fetchone()
-            position = conn.execute(
-                "SELECT quantity, avg_price FROM positions WHERE user_id = ? AND ticker = ?",
-                (user_id, ticker),
-            ).fetchone()
-            price, total = int(stock["price"]), int(stock["price"]) * quantity
-            cost_basis = realized_profit = None
             if side == "buy":
-                if int(account["cash"]) < total:
+                account = conn.execute(
+                    "SELECT cash FROM accounts WHERE user_id = ?", (user_id,)
+                ).fetchone()
+                stock = conn.execute(
+                    "SELECT price FROM market_state WHERE ticker = ?", (ticker,)
+                ).fetchone()
+                if not stock:
+                    raise MarketError(404, "존재하지 않는 종목입니다.")
+                available_cash = int(account["cash"]) - self._reserved_buy_total(conn, user_id)
+                if available_cash < int(stock["price"]) * quantity:
                     raise MarketError(400, "주문 가능 현금이 부족합니다.")
-                conn.execute("UPDATE accounts SET cash = cash - ? WHERE user_id = ?", (total, user_id))
-                cursor = conn.execute(
-                    """INSERT INTO trades
-                       (user_id, ticker, side, quantity, price, total, executed_at,
-                        cost_method, cost_basis, realized_profit)
-                       VALUES (?, ?, 'buy', ?, ?, ?, ?, NULL, NULL, NULL)""",
-                    (user_id, ticker, quantity, price, total, now),
-                )
-                conn.execute(
-                    """INSERT INTO position_lots
-                       (user_id, ticker, trade_id, original_quantity, remaining_quantity,
-                        price, acquired_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (user_id, ticker, cursor.lastrowid, quantity, quantity, price, now),
-                )
-                self._sync_position_from_lots(conn, user_id, ticker)
             else:
-                held = int(position["quantity"]) if position else 0
-                if held < quantity:
+                position = conn.execute(
+                    "SELECT quantity FROM positions WHERE user_id = ? AND ticker = ?",
+                    (user_id, ticker),
+                ).fetchone()
+                available_quantity = (
+                    int(position["quantity"]) if position else 0
+                ) - self._reserved_sell_quantity(conn, user_id, ticker)
+                if available_quantity < quantity:
                     raise MarketError(400, "보유 수량이 부족합니다.")
-                cost_basis = self._consume_lots(
-                    conn, user_id, ticker, quantity, selected_method
-                )
-                realized_profit = total - cost_basis
-                conn.execute("UPDATE accounts SET cash = cash + ? WHERE user_id = ?", (total, user_id))
-                self._sync_position_from_lots(conn, user_id, ticker)
-                cursor = conn.execute(
-                    """INSERT INTO trades
-                       (user_id, ticker, side, quantity, price, total, executed_at,
-                        cost_method, cost_basis, realized_profit)
-                       VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        user_id, ticker, quantity, price, total, now, selected_method,
-                        cost_basis, realized_profit,
-                    ),
-                )
+            result = self._execute_order(
+                conn, user_id=user_id, ticker=ticker, side=side, quantity=quantity,
+                cost_method=selected_method, executed_at=now,
+            )
             portfolio = self._portfolio(conn, user_id)
             conn.commit()
+        stock = result["stock"]
+        cost_basis, realized_profit = result["cost_basis"], result["realized_profit"]
         return {
             "message": f"{stock['name']} {quantity:,}주 {('매수' if side == 'buy' else '매도')} 체결",
-            "trade_id": cursor.lastrowid, "price": price, "total": total,
+            "trade_id": result["trade_id"], "price": result["price"],
+            "total": result["total"],
             "cost_method": selected_method,
             "cost_basis": round(cost_basis) if cost_basis is not None else None,
             "realized_profit": (
@@ -1111,6 +1251,96 @@ class MarketEngine:
             ),
             "portfolio": portfolio,
         }
+
+    def reserve_order(
+        self, user_id: str, ticker: str, side: str, quantity: int,
+        target_price: int, cost_method: str = "lofo",
+    ) -> dict:
+        self._validate_user_id(user_id)
+        if side not in {"buy", "sell"} or quantity < 1 or target_price < 1_000:
+            raise MarketError(422, "예약 주문 값이 올바르지 않습니다.")
+        selected_method = self._normalize_cost_method(cost_method) if side == "sell" else None
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._advance(conn, now)
+            self._ensure_account(conn, user_id, now)
+            stock = conn.execute(
+                "SELECT ticker, name, price FROM market_state WHERE ticker = ?", (ticker,)
+            ).fetchone()
+            if not stock:
+                raise MarketError(404, "존재하지 않는 종목입니다.")
+            if side == "buy":
+                cash = int(conn.execute(
+                    "SELECT cash FROM accounts WHERE user_id = ?", (user_id,)
+                ).fetchone()["cash"])
+                available_cash = cash - self._reserved_buy_total(conn, user_id)
+                if available_cash < target_price * quantity:
+                    raise MarketError(400, "예약 주문에 사용할 주문 가능 현금이 부족합니다.")
+            else:
+                position = conn.execute(
+                    "SELECT quantity FROM positions WHERE user_id = ? AND ticker = ?",
+                    (user_id, ticker),
+                ).fetchone()
+                available_quantity = (
+                    int(position["quantity"]) if position else 0
+                ) - self._reserved_sell_quantity(conn, user_id, ticker)
+                if available_quantity < quantity:
+                    raise MarketError(400, "예약 매도에 사용할 보유 수량이 부족합니다.")
+            cursor = conn.execute(
+                """INSERT INTO reserved_orders
+                   (user_id, ticker, side, quantity, target_price, cost_method,
+                    status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                (
+                    user_id, ticker, side, quantity, target_price,
+                    selected_method, now,
+                ),
+            )
+            order_id = cursor.lastrowid
+            self._process_reserved_orders(conn, now)
+            reserved = conn.execute(
+                "SELECT status, trade_id FROM reserved_orders WHERE id = ?", (order_id,)
+            ).fetchone()
+            portfolio = self._portfolio(conn, user_id)
+            conn.commit()
+        executed = reserved["status"] == "executed"
+        condition = "이하" if side == "buy" else "이상"
+        return {
+            "message": (
+                f"현재가가 이미 목표 조건에 도달해 {stock['name']} {quantity:,}주가 체결되었습니다."
+                if executed else
+                f"{stock['name']} {quantity:,}주 예약 {('매수' if side == 'buy' else '매도')}가 등록되었습니다."
+            ),
+            "order_id": order_id, "status": reserved["status"],
+            "trade_id": reserved["trade_id"], "side": side, "quantity": quantity,
+            "target_price": target_price, "condition": condition,
+            "portfolio": portfolio,
+        }
+
+    def cancel_reserved_order(self, user_id: str, order_id: int) -> dict:
+        self._validate_user_id(user_id)
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._advance(conn, now)
+            order = conn.execute(
+                """SELECT r.id, r.status, r.quantity, r.side, m.name
+                   FROM reserved_orders r JOIN market_state m ON m.ticker = r.ticker
+                   WHERE r.id = ? AND r.user_id = ?""",
+                (order_id, user_id),
+            ).fetchone()
+            if not order:
+                raise MarketError(404, "예약 주문을 찾을 수 없습니다.")
+            if order["status"] != "pending":
+                raise MarketError(409, "이미 처리된 예약 주문은 취소할 수 없습니다.")
+            conn.execute(
+                """UPDATE reserved_orders SET status = 'cancelled', resolved_at = ?
+                   WHERE id = ?""",
+                (now, order_id),
+            )
+            conn.commit()
+        return {"message": f"{order['name']} 예약 주문을 취소했습니다.", "order_id": order_id}
 
     def publish_news(
         self, *, title: str, content: str, sentiment: str,
@@ -1158,6 +1388,7 @@ class MarketEngine:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._ensure_account(conn, user_id, now)
+            conn.execute("DELETE FROM reserved_orders WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM position_lots WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM trades WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM positions WHERE user_id = ?", (user_id,))
@@ -1178,6 +1409,11 @@ class MarketEngine:
             conn.execute("BEGIN IMMEDIATE")
             self._advance(conn, now)
             self._ensure_account(conn, user_id, now)
+            conn.execute(
+                """UPDATE reserved_orders SET status = 'cancelled', resolved_at = ?
+                   WHERE user_id = ? AND status = 'pending'""",
+                (now, user_id),
+            )
             positions = conn.execute(
                 """SELECT p.ticker, p.quantity, m.price
                    FROM positions p JOIN market_state m ON m.ticker = p.ticker

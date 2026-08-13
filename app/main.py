@@ -25,6 +25,10 @@ class OrderRequest(BaseModel):
     cost_method: str = Field(default="lofo", pattern="^(fifo|lifo|lofo)$")
 
 
+class ReservedOrderRequest(OrderRequest):
+    target_price: int = Field(ge=1_000)
+
+
 class SellAllRequest(BaseModel):
     cost_method: str = Field(default="lofo", pattern="^(fifo|lifo|lofo)$")
 
@@ -123,6 +127,27 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             side=request.side,
             quantity=request.quantity,
             cost_method=request.cost_method,
+        )
+
+    @app.post("/api/market/reserved-orders", status_code=201)
+    async def reserve_order(
+        request: ReservedOrderRequest, user: dict = Depends(current_user),
+    ) -> dict:
+        return engine.reserve_order(
+            user_id=engine.account_id_for_user(user["id"]),
+            ticker=request.ticker,
+            side=request.side,
+            quantity=request.quantity,
+            target_price=request.target_price,
+            cost_method=request.cost_method,
+        )
+
+    @app.delete("/api/market/reserved-orders/{order_id}")
+    async def cancel_reserved_order(
+        order_id: int, user: dict = Depends(current_user),
+    ) -> dict:
+        return engine.cancel_reserved_order(
+            engine.account_id_for_user(user["id"]), order_id,
         )
 
     @app.post("/api/market/news")
