@@ -12,6 +12,10 @@ import pytest
 from app.main import create_app
 from app.market import (
     BASE_CHANGE_MAX,
+    OVERHEAT_DOWN_PROBABILITY,
+    OVERHEAT_THRESHOLD_RATIO,
+    OVERHEAT_UP_MULTIPLIER,
+    PRICE_CEILING_RATIO,
     PRICE_FLOOR_RATIO,
     RANDOM_NEWS_CHANGE_MAX,
     RANDOM_NEWS_CHANGE_MIN,
@@ -131,19 +135,19 @@ class DirectionRng:
 
 def test_recovery_mode_favors_gains_and_halves_losses(market_app):
     assert RECOVERY_THRESHOLD_RATIO == 0.60
-    assert RECOVERY_UP_PROBABILITY == 0.70
+    assert RECOVERY_UP_PROBABILITY == 0.65
     assert RECOVERY_DOWN_MULTIPLIER == 0.50
     app, _database = market_app
     engine = app.state.market
 
-    engine.rng = DirectionRng(0.69)
+    engine.rng = DirectionRng(0.64)
     buy_volume, sell_volume, recovery_gain = engine._virtual_flow(
         50_000, recovery_mode=True,
     )
     assert recovery_gain > 0
     assert buy_volume > sell_volume
 
-    engine.rng = DirectionRng(0.71)
+    engine.rng = DirectionRng(0.66)
     _buy_volume, _sell_volume, recovery_loss = engine._virtual_flow(
         50_000, recovery_mode=True,
     )
@@ -153,8 +157,32 @@ def test_recovery_mode_favors_gains_and_halves_losses(market_app):
     assert recovery_loss == pytest.approx(normal_loss * RECOVERY_DOWN_MULTIPLIER)
 
 
+def test_overheat_mode_favors_losses_and_halves_gains(market_app):
+    assert OVERHEAT_THRESHOLD_RATIO == 1.40
+    assert OVERHEAT_DOWN_PROBABILITY == 0.65
+    assert OVERHEAT_UP_MULTIPLIER == 0.50
+    app, _database = market_app
+    engine = app.state.market
+
+    engine.rng = DirectionRng(0.64)
+    buy_volume, sell_volume, overheat_loss = engine._virtual_flow(
+        150_000, overheat_mode=True,
+    )
+    assert overheat_loss < 0
+    assert buy_volume < sell_volume
+
+    engine.rng = DirectionRng(0.66)
+    _buy_volume, _sell_volume, overheat_gain = engine._virtual_flow(
+        150_000, overheat_mode=True,
+    )
+    engine.rng = DirectionRng(0.51)
+    _buy_volume, _sell_volume, normal_gain = engine._virtual_flow(150_000)
+    assert overheat_gain > 0
+    assert overheat_gain == pytest.approx(normal_gain * OVERHEAT_UP_MULTIPLIER)
+
+
 def test_normal_tick_cannot_fall_below_stock_floor(market_app):
-    assert PRICE_FLOOR_RATIO == 0.40
+    assert PRICE_FLOOR_RATIO == 0.30
     app, database = market_app
     snapshot(app)
     floor = round(84_000 * PRICE_FLOOR_RATIO / 10) * 10
@@ -175,6 +203,30 @@ def test_normal_tick_cannot_fall_below_stock_floor(market_app):
     app.state.market.rng = DirectionRng(0.99)
 
     assert stock(snapshot(app))["price"] == floor
+
+
+def test_normal_tick_cannot_rise_above_stock_ceiling(market_app):
+    assert PRICE_CEILING_RATIO == 2.50
+    app, database = market_app
+    snapshot(app)
+    ceiling = round(84_000 * PRICE_CEILING_RATIO / 10) * 10
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE market_state SET price = ?, previous_price = ? WHERE ticker = '005930'",
+            (ceiling, ceiling),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'",
+            (str(time.time() - 15.2),),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'next_random_news_at'",
+            (str(time.time() + 300),),
+        )
+        conn.commit()
+    app.state.market.rng = DirectionRng(0.99)
+
+    assert stock(snapshot(app))["price"] == ceiling
 
 
 def test_positive_news_applies_twenty_percent_to_selected_stock(market_app):
@@ -222,7 +274,7 @@ def test_negative_news_cannot_break_stock_floor(market_app):
     floor = round(84_000 * PRICE_FLOOR_RATIO / 10) * 10
     with sqlite3.connect(database) as conn:
         conn.execute(
-            "UPDATE market_state SET price = 34000, previous_price = 34000 "
+            "UPDATE market_state SET price = 26000, previous_price = 26000 "
             "WHERE ticker = '005930'"
         )
         conn.execute(
@@ -249,6 +301,42 @@ def test_negative_news_cannot_break_stock_floor(market_app):
 
     after = snapshot(app)
     assert stock(after)["price"] == floor
+    assert after["history"][-1]["event_type"] == "news"
+
+
+def test_positive_news_cannot_break_stock_ceiling(market_app):
+    app, database = market_app
+    snapshot(app)
+    ceiling = round(84_000 * PRICE_CEILING_RATIO / 10) * 10
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE market_state SET price = 205000, previous_price = 205000 "
+            "WHERE ticker = '005930'"
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'",
+            (str(time.time()),),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'next_random_news_at'",
+            (str(time.time() + 300),),
+        )
+        conn.commit()
+    response = request(app, "POST", "/api/market/news", json={
+        "title": "최고가 검증 뉴스", "content": "가격 상한을 검증합니다.",
+        "sentiment": "positive", "ticker": "005930", "impact_pct": 25,
+        "admin_key": "",
+    })
+    assert response.status_code == 200
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE news SET effective_at = ? WHERE id = ?",
+            (time.time() - 0.1, response.json()["news_id"]),
+        )
+        conn.commit()
+
+    after = snapshot(app)
+    assert stock(after)["price"] == ceiling
     assert after["history"][-1]["event_type"] == "news"
 
 

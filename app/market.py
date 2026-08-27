@@ -27,9 +27,13 @@ RANDOM_NEWS_INTERVAL_VERSION = "3-5-min-v1"
 RANDOM_NEWS_CHANGE_MIN = 7.0
 RANDOM_NEWS_CHANGE_MAX = 10.0
 RECOVERY_THRESHOLD_RATIO = 0.60
-RECOVERY_UP_PROBABILITY = 0.70
+RECOVERY_UP_PROBABILITY = 0.65
 RECOVERY_DOWN_MULTIPLIER = 0.50
-PRICE_FLOOR_RATIO = 0.40
+OVERHEAT_THRESHOLD_RATIO = 1.40
+OVERHEAT_DOWN_PROBABILITY = 0.65
+OVERHEAT_UP_MULTIPLIER = 0.50
+PRICE_FLOOR_RATIO = 0.30
+PRICE_CEILING_RATIO = 2.50
 INITIAL_CASH = 100_000_000
 MAX_CATCHUP_TICKS = 240
 PASSWORD_HASH_ITERATIONS = 210_000
@@ -191,8 +195,23 @@ def _stock_price_floor(ticker: str) -> int:
     return _round_price(STOCK_BASELINES[ticker] * PRICE_FLOOR_RATIO)
 
 
+def _stock_price_ceiling(ticker: str) -> int:
+    return _round_price(STOCK_BASELINES[ticker] * PRICE_CEILING_RATIO)
+
+
+def _clamp_stock_price(ticker: str, value: float) -> int:
+    return min(
+        _stock_price_ceiling(ticker),
+        max(_stock_price_floor(ticker), _round_price(value)),
+    )
+
+
 def _stock_recovery_threshold(ticker: str) -> int:
     return _round_price(STOCK_BASELINES[ticker] * RECOVERY_THRESHOLD_RATIO)
+
+
+def _stock_overheat_threshold(ticker: str) -> int:
+    return _round_price(STOCK_BASELINES[ticker] * OVERHEAT_THRESHOLD_RATIO)
 
 
 class MarketEngine:
@@ -774,7 +793,7 @@ class MarketEngine:
 
     def _virtual_flow(
         self, price: int, *, news_impact: float | None = None,
-        recovery_mode: bool = False,
+        recovery_mode: bool = False, overheat_mode: bool = False,
     ) -> tuple[int, int, float]:
         """Generate aggregate order flow and derive its price pressure."""
         baseline_volume = max(100, int((4_000_000_000 / price) * self.rng.uniform(0.85, 1.15)))
@@ -785,7 +804,9 @@ class MarketEngine:
             if (
                 recovery_mode and direction_roll >= RECOVERY_UP_PROBABILITY
             ) or (
-                not recovery_mode and direction_roll < 0.5
+                overheat_mode and direction_roll < OVERHEAT_DOWN_PROBABILITY
+            ) or (
+                not recovery_mode and not overheat_mode and direction_roll < 0.5
             ):
                 imbalance *= -1
             total_volume = max(1, int(baseline_volume * activity))
@@ -793,6 +814,8 @@ class MarketEngine:
             magnitude = min(BASE_CHANGE_MAX, max(BASE_CHANGE_MIN, abs(pressure)))
             if recovery_mode and pressure < 0:
                 magnitude *= RECOVERY_DOWN_MULTIPLIER
+            if overheat_mode and pressure > 0:
+                magnitude *= OVERHEAT_UP_MULTIPLIER
             change = magnitude if pressure >= 0 else -magnitude
         else:
             activity = self.rng.uniform(4.5, 8.5)
@@ -820,9 +843,8 @@ class MarketEngine:
             buy_volume, sell_volume, requested_change = self._virtual_flow(
                 old_price, news_impact=float(event["impact_pct"])
             )
-            new_price = max(
-                _stock_price_floor(target["ticker"]),
-                _round_price(old_price * (1 + requested_change)),
+            new_price = _clamp_stock_price(
+                target["ticker"], old_price * (1 + requested_change),
             )
             actual_change = (new_price / old_price - 1) * 100
             conn.execute(
@@ -911,11 +933,9 @@ class MarketEngine:
                 buy_volume, sell_volume, requested_change = self._virtual_flow(
                     old_price,
                     recovery_mode=old_price <= _stock_recovery_threshold(ticker),
+                    overheat_mode=old_price >= _stock_overheat_threshold(ticker),
                 )
-                new_price = max(
-                    _stock_price_floor(ticker),
-                    _round_price(old_price * (1 + requested_change)),
-                )
+                new_price = _clamp_stock_price(ticker, old_price * (1 + requested_change))
                 actual_change = ((new_price / old_price) - 1) * 100
                 conn.execute(
                     """UPDATE market_state SET previous_price = price, price = ?, updated_at = ?
