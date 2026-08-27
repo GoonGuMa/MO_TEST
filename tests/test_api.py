@@ -4,6 +4,7 @@ import asyncio
 import random
 import sqlite3
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -11,11 +12,19 @@ import pytest
 from app.main import create_app
 from app.market import (
     BASE_CHANGE_MAX,
+    OVERHEAT_DOWN_PROBABILITY,
+    OVERHEAT_THRESHOLD_RATIO,
+    OVERHEAT_UP_MULTIPLIER,
+    PRICE_CEILING_RATIO,
+    PRICE_FLOOR_RATIO,
     RANDOM_NEWS_CHANGE_MAX,
     RANDOM_NEWS_CHANGE_MIN,
     RANDOM_NEWS_INTERVAL_MAX,
     RANDOM_NEWS_INTERVAL_MIN,
     RANDOM_NEWS_SCENARIOS,
+    RECOVERY_DOWN_MULTIPLIER,
+    RECOVERY_THRESHOLD_RATIO,
+    RECOVERY_UP_PROBABILITY,
     STOCKS,
 )
 
@@ -113,6 +122,113 @@ def test_normal_tick_moves_every_stock_within_configured_range(market_app):
         assert (current["change_pct"] > 0) == (current["buy_volume"] > current["sell_volume"])
 
 
+class DirectionRng:
+    def __init__(self, direction_roll):
+        self.direction_roll = direction_roll
+
+    def uniform(self, low, high):
+        return (low + high) / 2
+
+    def random(self):
+        return self.direction_roll
+
+
+def test_recovery_mode_favors_gains_and_halves_losses(market_app):
+    assert RECOVERY_THRESHOLD_RATIO == 0.60
+    assert RECOVERY_UP_PROBABILITY == 0.65
+    assert RECOVERY_DOWN_MULTIPLIER == 0.50
+    app, _database = market_app
+    engine = app.state.market
+
+    engine.rng = DirectionRng(0.64)
+    buy_volume, sell_volume, recovery_gain = engine._virtual_flow(
+        50_000, recovery_mode=True,
+    )
+    assert recovery_gain > 0
+    assert buy_volume > sell_volume
+
+    engine.rng = DirectionRng(0.66)
+    _buy_volume, _sell_volume, recovery_loss = engine._virtual_flow(
+        50_000, recovery_mode=True,
+    )
+    engine.rng = DirectionRng(0.49)
+    _buy_volume, _sell_volume, normal_loss = engine._virtual_flow(50_000)
+    assert recovery_loss < 0
+    assert recovery_loss == pytest.approx(normal_loss * RECOVERY_DOWN_MULTIPLIER)
+
+
+def test_overheat_mode_favors_losses_and_halves_gains(market_app):
+    assert OVERHEAT_THRESHOLD_RATIO == 1.40
+    assert OVERHEAT_DOWN_PROBABILITY == 0.65
+    assert OVERHEAT_UP_MULTIPLIER == 0.50
+    app, _database = market_app
+    engine = app.state.market
+
+    engine.rng = DirectionRng(0.64)
+    buy_volume, sell_volume, overheat_loss = engine._virtual_flow(
+        150_000, overheat_mode=True,
+    )
+    assert overheat_loss < 0
+    assert buy_volume < sell_volume
+
+    engine.rng = DirectionRng(0.66)
+    _buy_volume, _sell_volume, overheat_gain = engine._virtual_flow(
+        150_000, overheat_mode=True,
+    )
+    engine.rng = DirectionRng(0.51)
+    _buy_volume, _sell_volume, normal_gain = engine._virtual_flow(150_000)
+    assert overheat_gain > 0
+    assert overheat_gain == pytest.approx(normal_gain * OVERHEAT_UP_MULTIPLIER)
+
+
+def test_normal_tick_cannot_fall_below_stock_floor(market_app):
+    assert PRICE_FLOOR_RATIO == 0.30
+    app, database = market_app
+    snapshot(app)
+    floor = round(84_000 * PRICE_FLOOR_RATIO / 10) * 10
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE market_state SET price = ?, previous_price = ? WHERE ticker = '005930'",
+            (floor, floor),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'",
+            (str(time.time() - 15.2),),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'next_random_news_at'",
+            (str(time.time() + 300),),
+        )
+        conn.commit()
+    app.state.market.rng = DirectionRng(0.99)
+
+    assert stock(snapshot(app))["price"] == floor
+
+
+def test_normal_tick_cannot_rise_above_stock_ceiling(market_app):
+    assert PRICE_CEILING_RATIO == 2.50
+    app, database = market_app
+    snapshot(app)
+    ceiling = round(84_000 * PRICE_CEILING_RATIO / 10) * 10
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE market_state SET price = ?, previous_price = ? WHERE ticker = '005930'",
+            (ceiling, ceiling),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'",
+            (str(time.time() - 15.2),),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'next_random_news_at'",
+            (str(time.time() + 300),),
+        )
+        conn.commit()
+    app.state.market.rng = DirectionRng(0.99)
+
+    assert stock(snapshot(app))["price"] == ceiling
+
+
 def test_positive_news_applies_twenty_percent_to_selected_stock(market_app):
     app, database = market_app
     old_price = stock(snapshot(app))["price"]
@@ -150,6 +266,78 @@ def test_positive_news_applies_twenty_percent_to_selected_stock(market_app):
     assert news_flow["volume"] == news_flow["buy_volume"] + news_flow["sell_volume"]
     assert news_flow["buy_volume"] > news_flow["sell_volume"]
     assert stock(snapshot(app))["price"] == stock(after)["price"]
+
+
+def test_negative_news_cannot_break_stock_floor(market_app):
+    app, database = market_app
+    snapshot(app)
+    floor = round(84_000 * PRICE_FLOOR_RATIO / 10) * 10
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE market_state SET price = 26000, previous_price = 26000 "
+            "WHERE ticker = '005930'"
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'",
+            (str(time.time()),),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'next_random_news_at'",
+            (str(time.time() + 300),),
+        )
+        conn.commit()
+    response = request(app, "POST", "/api/market/news", json={
+        "title": "최저가 검증 뉴스", "content": "가격 하한을 검증합니다.",
+        "sentiment": "negative", "ticker": "005930", "impact_pct": 25,
+        "admin_key": "",
+    })
+    assert response.status_code == 200
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE news SET effective_at = ? WHERE id = ?",
+            (time.time() - 0.1, response.json()["news_id"]),
+        )
+        conn.commit()
+
+    after = snapshot(app)
+    assert stock(after)["price"] == floor
+    assert after["history"][-1]["event_type"] == "news"
+
+
+def test_positive_news_cannot_break_stock_ceiling(market_app):
+    app, database = market_app
+    snapshot(app)
+    ceiling = round(84_000 * PRICE_CEILING_RATIO / 10) * 10
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE market_state SET price = 205000, previous_price = 205000 "
+            "WHERE ticker = '005930'"
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'",
+            (str(time.time()),),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'next_random_news_at'",
+            (str(time.time() + 300),),
+        )
+        conn.commit()
+    response = request(app, "POST", "/api/market/news", json={
+        "title": "최고가 검증 뉴스", "content": "가격 상한을 검증합니다.",
+        "sentiment": "positive", "ticker": "005930", "impact_pct": 25,
+        "admin_key": "",
+    })
+    assert response.status_code == 200
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE news SET effective_at = ? WHERE id = ?",
+            (time.time() - 0.1, response.json()["news_id"]),
+        )
+        conn.commit()
+
+    after = snapshot(app)
+    assert stock(after)["price"] == ceiling
+    assert after["history"][-1]["event_type"] == "news"
 
 
 
@@ -237,6 +425,209 @@ def test_buy_and_sell_update_cash_and_position(market_app):
     }, cookies=cookies)
     assert rejected.status_code == 400
     assert "보유 수량" in rejected.json()["detail"]
+
+
+def test_reserved_buy_locks_cash_and_executes_at_the_first_matching_price(market_app):
+    app, database = market_app
+    cookies, _ = register(app, username="reserved_buyer")
+    current_price = stock(snapshot(app, cookies=cookies))["price"]
+    target_price = current_price - 1_000
+
+    response = request(app, "POST", "/api/market/reserved-orders", json={
+        "ticker": "005930", "side": "buy", "quantity": 10,
+        "target_price": target_price,
+    }, cookies=cookies)
+    assert response.status_code == 201
+    assert response.json()["status"] == "pending"
+
+    pending = snapshot(app, cookies=cookies)
+    assert pending["reserved_orders"][0]["target_price"] == target_price
+    assert pending["portfolio"]["cash"] == 100_000_000
+    assert pending["portfolio"]["reserved_cash"] == target_price * 10
+    assert pending["portfolio"]["available_cash"] == 100_000_000 - target_price * 10
+
+    execution_price = target_price - 10
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE market_state SET price = ?, previous_price = ? WHERE ticker = '005930'",
+            (execution_price, execution_price),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'", (str(time.time()),)
+        )
+        conn.commit()
+
+    executed = snapshot(app, cookies=cookies)
+    assert executed["reserved_orders"] == []
+    assert executed["trades"][0]["side"] == "buy"
+    assert executed["trades"][0]["price"] == execution_price
+    assert executed["portfolio"]["positions"][0]["quantity"] == 10
+    assert executed["portfolio"]["cash"] == 100_000_000 - execution_price * 10
+    assert executed["portfolio"]["reserved_cash"] == 0
+
+
+def test_reserved_sell_locks_shares_and_can_be_cancelled(market_app):
+    app, database = market_app
+    cookies, _ = register(app, username="reserved_seller")
+    current_price = stock(snapshot(app, cookies=cookies))["price"]
+    assert request(app, "POST", "/api/market/orders", json={
+        "ticker": "005930", "side": "buy", "quantity": 10,
+    }, cookies=cookies).status_code == 200
+
+    reserved = request(app, "POST", "/api/market/reserved-orders", json={
+        "ticker": "005930", "side": "sell", "quantity": 7,
+        "target_price": current_price + 1_000, "cost_method": "fifo",
+    }, cookies=cookies)
+    assert reserved.status_code == 201
+    assert reserved.json()["status"] == "pending"
+    portfolio = reserved.json()["portfolio"]
+    assert portfolio["positions"][0]["reserved_quantity"] == 7
+    assert portfolio["positions"][0]["available_quantity"] == 3
+
+    rejected = request(app, "POST", "/api/market/orders", json={
+        "ticker": "005930", "side": "sell", "quantity": 4,
+    }, cookies=cookies)
+    assert rejected.status_code == 400
+
+    cancelled = request(
+        app, "DELETE", f"/api/market/reserved-orders/{reserved.json()['order_id']}",
+        cookies=cookies,
+    )
+    assert cancelled.status_code == 200
+    after = snapshot(app, cookies=cookies)
+    assert after["reserved_orders"] == []
+    assert after["portfolio"]["positions"][0]["available_quantity"] == 10
+
+    second = request(app, "POST", "/api/market/reserved-orders", json={
+        "ticker": "005930", "side": "sell", "quantity": 7,
+        "target_price": current_price + 1_000, "cost_method": "fifo",
+    }, cookies=cookies)
+    assert second.status_code == 201
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE market_state SET price = ?, previous_price = ? WHERE ticker = '005930'",
+            (current_price + 1_010, current_price + 1_010),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'", (str(time.time()),)
+        )
+        conn.commit()
+    executed = snapshot(app, cookies=cookies)
+    assert executed["reserved_orders"] == []
+    assert executed["trades"][0]["side"] == "sell"
+    assert executed["trades"][0]["quantity"] == 7
+    assert executed["trades"][0]["cost_method"] == "fifo"
+    assert executed["portfolio"]["positions"][0]["quantity"] == 3
+
+
+def test_reserved_order_executes_immediately_when_price_already_matches(market_app):
+    app, _ = market_app
+    cookies, _ = register(app, username="instant_reserved")
+    current_price = stock(snapshot(app, cookies=cookies))["price"]
+    response = request(app, "POST", "/api/market/reserved-orders", json={
+        "ticker": "005930", "side": "buy", "quantity": 2,
+        "target_price": current_price,
+    }, cookies=cookies)
+    assert response.status_code == 201
+    assert response.json()["status"] == "executed"
+    assert response.json()["trade_id"] is not None
+    assert response.json()["portfolio"]["positions"][0]["quantity"] == 2
+
+
+def test_order_panel_has_separate_immediate_and_reserved_modes():
+    root = Path(__file__).parents[1]
+    html = (root / "app" / "static" / "index.html").read_text()
+    css = (root / "app" / "static" / "styles.css").read_text()
+    script = (root / "app" / "static" / "app.js").read_text()
+    for mode in ("buy", "sell", "reserved-buy", "reserved-sell"):
+        assert f'data-order-mode="{mode}"' in html
+    assert 'id="reserve-order-submit"' not in html
+    assert ".order-mode-toggle button.active.buy" in css
+    assert ".order-mode-toggle button.active.sell" in css
+    assert "state.orderType === 'reserved'" in script
+    assert "평단가 ${integer.format(Math.round(position.avg_price))}원" in script
+    assert 'class="reservation buy"></i>예수' in html
+    assert 'class="reservation sell"></i>예도' in html
+    assert ".reservation-price-level.buy line" in css
+    assert ".reservation-price-level.sell line" in css
+    assert "const reservationLines = reservationLevels.map" in script
+
+
+@pytest.mark.parametrize(
+    ("cost_method", "expected_cost", "expected_profit", "remaining_average"),
+    (
+        ("fifo", 32_000, 7_000, 68_000 / 6),
+        ("lifo", 33_000, 6_000, 67_000 / 6),
+        ("lofo", 31_000, 8_000, 69_000 / 6),
+    ),
+)
+def test_sell_cost_method_consumes_the_selected_purchase_lots(
+    market_app, cost_method, expected_cost, expected_profit, remaining_average,
+):
+    app, database = market_app
+    cookies, _ = register(app, username=f"method_{cost_method}")
+    snapshot(app, cookies=cookies)
+
+    for price, quantity in ((10_000, 2), (12_000, 3), (11_000, 4)):
+        with sqlite3.connect(database) as conn:
+            conn.execute(
+                "UPDATE market_state SET price = ?, previous_price = ? WHERE ticker = '005930'",
+                (price, price),
+            )
+            conn.execute(
+                "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'",
+                (str(time.time()),),
+            )
+            conn.commit()
+        response = request(app, "POST", "/api/market/orders", json={
+            "ticker": "005930", "side": "buy", "quantity": quantity,
+        }, cookies=cookies)
+        assert response.status_code == 200
+
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE market_state SET price = 13000, previous_price = 13000 "
+            "WHERE ticker = '005930'"
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'",
+            (str(time.time()),),
+        )
+        conn.commit()
+    response = request(app, "POST", "/api/market/orders", json={
+        "ticker": "005930", "side": "sell", "quantity": 3,
+        "cost_method": cost_method,
+    }, cookies=cookies)
+    assert response.status_code == 200
+    result = response.json()
+    assert result["cost_method"] == cost_method
+    assert result["cost_basis"] == expected_cost
+    assert result["realized_profit"] == expected_profit
+    assert result["realized_profit_pct"] == round(expected_profit / expected_cost * 100, 2)
+    assert result["portfolio"]["positions"][0]["quantity"] == 6
+    assert result["portfolio"]["positions"][0]["avg_price"] == round(remaining_average, 2)
+    api_lots = result["portfolio"]["positions"][0]["lots"]
+    assert sum(lot["remaining_quantity"] for lot in api_lots) == 6
+    assert all({"original_quantity", "price", "acquired_at"} <= lot.keys() for lot in api_lots)
+
+    recorded = snapshot(app, cookies=cookies)["trades"][0]
+    assert recorded["cost_method"] == cost_method
+    assert recorded["cost_basis"] == expected_cost
+    assert recorded["realized_profit"] == expected_profit
+    with sqlite3.connect(database) as conn:
+        lots = conn.execute(
+            """SELECT original_quantity, remaining_quantity, price
+               FROM position_lots WHERE remaining_quantity > 0 ORDER BY id"""
+        ).fetchall()
+    assert sum(row[1] for row in lots) == 6
+
+
+def test_assets_view_is_available_from_the_main_menu():
+    html = (Path(__file__).parents[1] / "app" / "static" / "index.html").read_text()
+    assert 'data-view-target="assets"' in html
+    assert 'id="view-assets"' in html
+    assert 'id="asset-chart"' in html
+    assert 'id="asset-position-list"' in html
 
 
 def test_news_admin_key_is_enforced(market_app, monkeypatch):

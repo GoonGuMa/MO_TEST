@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="금융감독원 금융통계정보시스템 데이터 탐색기">
+    <title>FSS Lens · 금융회사 데이터</title>
+    <link rel="stylesheet" href="/finance/static/finance.css?v=4">
+</head>
+<body>
+<main class="shell">
+    <header class="topbar">
+        <div class="finance-topbar-left">
+            <button id="menu-toggle" class="menu-toggle" type="button" aria-expanded="false" aria-controls="app-menu"><span class="menu-icon" aria-hidden="true">☰</span><span>메뉴</span></button>
+            <div class="brand"><span class="brand-mark">₩</span><span>Finance Data Lab</span></div>
+        </div>
+        <nav class="nav" aria-label="금융 데이터 화면">
+            <a class="active" href="/finance/fss">금융회사</a>
+            <a href="/finance/krx">시장</a>
+            <a href="/finance/ecos">경제</a>
+            <a href="/finance/dart">기업공시</a>
+            <a href="/finance/docs">API 문서</a>
+        </nav>
+    </header>
+
+    <div id="menu-backdrop" class="menu-backdrop" aria-hidden="true"></div>
+    <aside id="app-menu" class="app-menu" aria-label="전체 메뉴" aria-hidden="true">
+        <header class="drawer-head">
+            <div><strong>MARKET LAB</strong><small>모의투자 · 금융 데이터</small></div>
+            <button id="menu-close" class="menu-close" type="button" aria-label="메뉴 닫기">×</button>
+        </header>
+        <nav class="drawer-nav">
+            <a class="drawer-item" href="/"><span class="drawer-item-icon">↗</span><span><strong>모의투자</strong><small>가상 시세 및 매수·매도</small></span></a>
+            <a class="drawer-item" href="/#news"><span class="drawer-item-icon">⚡</span><span><strong>뉴스</strong><small>뉴스 발행 및 변동 관리</small></span></a>
+            <a class="drawer-item" href="/#assets"><span class="drawer-item-icon">◉</span><span><strong>보유자산 현황</strong><small>현금·종목 비중 및 매수분 확인</small></span></a>
+            <a class="drawer-item" href="/#trades"><span class="drawer-item-icon">≡</span><span><strong>내 거래내역</strong><small>전체 매수·매도 체결 내역</small></span></a>
+            <a class="drawer-item" href="/finance/fss"><span class="drawer-item-icon">▦</span><span><strong>금융회사</strong><small>금융감독원 FISIS 데이터</small></span></a>
+            <a class="drawer-item" href="/finance/krx"><span class="drawer-item-icon">▥</span><span><strong>시장</strong><small>KRX 일별 시장 스캐너</small></span></a>
+            <a class="drawer-item" href="/finance/ecos"><span class="drawer-item-icon">◎</span><span><strong>경제</strong><small>한국은행 경제지표</small></span></a>
+            <a class="drawer-item" href="/finance/dart"><span class="drawer-item-icon">⌕</span><span><strong>기업공시</strong><small>OpenDART 기업 분석</small></span></a>
+        </nav>
+        <div class="drawer-foot"><strong>MARKET LAB</strong><span>교육용 가상 시장과 금융 데이터</span></div>
+    </aside>
+
+    <section class="hero">
+        <div>
+            <p class="eyebrow">Financial Institution Explorer</p>
+            <h1>금융회사를 숫자로<br>비교합니다.</h1>
+            <p class="lede">금융감독원 금융통계정보시스템에서 금융회사 목록과 통계표를 직접 조회합니다. 회사와 통계표 코드를 바꿔가며 실제 제공 범위를 탐색할 수 있습니다.</p>
+        </div>
+    </section>
+
+    <section class="controls" aria-label="조회 조건">
+        <div class="field">
+            <label for="sector">금융권역 코드</label>
+            <input id="sector" value="A" maxlength="4" style="width:110px">
+        </div>
+        <div class="field">
+            <label for="company-search">회사명 필터</label>
+            <input id="company-search" class="search-input" placeholder="예: 국민은행">
+        </div>
+        <button id="load-companies" class="button">회사 조회</button>
+    </section>
+    <div id="status" class="status">조회 준비</div>
+
+    <section class="metric-grid">
+        <article class="metric"><span class="metric-label">조회 회사</span><strong id="company-count" class="metric-value">-</strong><span class="metric-note">현재 권역</span></article>
+        <article class="metric"><span class="metric-label">선택 회사</span><strong id="selected-company" class="metric-value" style="font-size:20px">-</strong><span id="selected-code" class="metric-note">회사를 선택하세요</span></article>
+        <article class="metric"><span class="metric-label">통계표</span><strong id="current-list" class="metric-value">SA030</strong><span class="metric-note">기본: 부문별 손익</span></article>
+        <article class="metric"><span class="metric-label">결과 행</span><strong id="row-count" class="metric-value">-</strong><span class="metric-note">FISIS 원본 응답</span></article>
+    </section>
+
+    <section class="grid-main">
+        <article class="panel">
+            <div class="panel-head">
+                <h2 class="panel-title">통계 데이터</h2>
+                <span class="panel-note">표의 열은 API 응답에 맞춰 자동 구성됩니다.</span>
+            </div>
+            <div class="controls">
+                <div class="field">
+                    <label for="list-no">통계표 코드</label>
+                    <input id="list-no" value="SA030" maxlength="20">
+                </div>
+                <div class="field">
+                    <label for="term">주기</label>
+                    <select id="term">
+                        <option value="Q">분기</option>
+                        <option value="H">반기</option>
+                        <option value="Y">연간</option>
+                        <option value="M">월간</option>
+                    </select>
+                </div>
+                <button id="load-stats" class="button ghost" disabled>선택 회사 통계 조회</button>
+            </div>
+            <div id="stats-table" class="table-wrap"><div class="empty">왼쪽에서 금융회사를 선택하세요.</div></div>
+        </article>
+
+        <aside class="panel">
+            <div class="panel-head">
+                <h2 class="panel-title">금융회사</h2>
+                <span id="visible-count" class="panel-note">0개</span>
+            </div>
+            <div id="company-list" class="company-list"><div class="empty">회사 목록을 불러오는 중입니다.</div></div>
+        </aside>
+    </section>
+    <p class="footer">금융감독원 금융통계정보시스템 제공 데이터 · 실제 보고 시 원 공시자료와 함께 확인하세요.</p>
+</main>
+
+<script src="/finance/static/finance.js?v=2"></script>
+<script>
+    const { escapeHtml, request, setStatus } = FinanceUI;
+    const statusEl = document.querySelector("#status");
+    const listEl = document.querySelector("#company-list");
+    const tableEl = document.querySelector("#stats-table");
+    let companies = [];
+    let selected = null;
+
+    function renderCompanies() {
+        const query = document.querySelector("#company-search").value.trim().toLowerCase();
+        const filtered = companies.filter((company) => company.name.toLowerCase().includes(query));
+        document.querySelector("#visible-count").textContent = `${filtered.length}개`;
+        if (!filtered.length) {
+            listEl.innerHTML = '<div class="empty">조건에 맞는 회사가 없습니다.</div>';
+            return;
+        }
+        listEl.innerHTML = filtered.map((company) => `
+            <button class="company-button ${selected?.code === company.code ? "active" : ""}" data-code="${escapeHtml(company.code)}">
+                ${escapeHtml(company.name)}
+                <small>${escapeHtml(company.code || "코드 없음")}</small>
+            </button>`).join("");
+        listEl.querySelectorAll(".company-button").forEach((button) => {
+            button.addEventListener("click", () => {
+                selected = companies.find((company) => company.code === button.dataset.code);
+                document.querySelector("#selected-company").textContent = selected.name;
+                document.querySelector("#selected-code").textContent = selected.code;
+                document.querySelector("#load-stats").disabled = false;
+                renderCompanies();
+                loadStatistics();
+            });
+        });
+    }
+
+    async function loadCompanies() {
+        const sector = document.querySelector("#sector").value.trim().toUpperCase() || "A";
+        setStatus(statusEl, "금융회사 목록을 조회하고 있습니다.", "loading");
+        document.querySelector("#load-companies").disabled = true;
+        try {
+            const data = await request(`/api/fss/companies?sector=${encodeURIComponent(sector)}`);
+            companies = data.companies;
+            selected = null;
+            document.querySelector("#company-count").textContent = data.count;
+            document.querySelector("#selected-company").textContent = "-";
+            document.querySelector("#selected-code").textContent = "회사를 선택하세요";
+            document.querySelector("#load-stats").disabled = true;
+            renderCompanies();
+            if (data.count) {
+                setStatus(statusEl, `${sector} 권역 금융회사 ${data.count}개를 불러왔습니다.`, "success");
+            } else {
+                setStatus(statusEl, data.message || "조회 결과가 없습니다. 인증키와 금융권역 코드를 확인해 주세요.", "error");
+            }
+        } catch (error) {
+            companies = [];
+            renderCompanies();
+            setStatus(statusEl, error.message, "error");
+        } finally {
+            document.querySelector("#load-companies").disabled = false;
+        }
+    }
+
+    function renderTable(rows) {
+        if (!rows.length) {
+            tableEl.innerHTML = '<div class="empty">조회 결과가 없습니다. 통계표 코드나 조회 주기를 바꿔보세요.</div>';
+            return;
+        }
+        const preferred = ["base_mm", "finance_nm", "account_nm", "a", "b", "c", "d", "unit"];
+        const allKeys = [...new Set(rows.slice(0, 30).flatMap(Object.keys))];
+        const keys = [...preferred.filter((key) => allKeys.includes(key)), ...allKeys.filter((key) => !preferred.includes(key))].slice(0, 10);
+        tableEl.innerHTML = `<table>
+            <thead><tr>${keys.map((key) => `<th>${escapeHtml(key)}</th>`).join("")}</tr></thead>
+            <tbody>${rows.slice(0, 100).map((row) => `<tr>${keys.map((key) => `<td>${escapeHtml(row[key] ?? "-")}</td>`).join("")}</tr>`).join("")}</tbody>
+        </table>`;
+    }
+
+    async function loadStatistics() {
+        if (!selected) return;
+        const listNo = document.querySelector("#list-no").value.trim().toUpperCase() || "SA030";
+        const term = document.querySelector("#term").value;
+        document.querySelector("#current-list").textContent = listNo;
+        document.querySelector("#load-stats").disabled = true;
+        setStatus(statusEl, `${selected.name} 통계를 조회하고 있습니다.`, "loading");
+        try {
+            const data = await request(`/api/fss/statistics?finance_code=${encodeURIComponent(selected.code)}&list_no=${encodeURIComponent(listNo)}&term=${encodeURIComponent(term)}`);
+            document.querySelector("#row-count").textContent = data.count;
+            renderTable(data.rows);
+            setStatus(statusEl, data.count ? `${selected.name} 통계 ${data.count}행을 불러왔습니다.` : (data.message || "조회 결과가 없습니다."), data.count ? "success" : "error");
+        } catch (error) {
+            document.querySelector("#row-count").textContent = "-";
+            tableEl.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+            setStatus(statusEl, error.message, "error");
+        } finally {
+            document.querySelector("#load-stats").disabled = false;
+        }
+    }
+
+    document.querySelector("#load-companies").addEventListener("click", loadCompanies);
+    document.querySelector("#load-stats").addEventListener("click", loadStatistics);
+    document.querySelector("#company-search").addEventListener("input", renderCompanies);
+    loadCompanies();
+</script>
+</body>
+</html>

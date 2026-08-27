@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="뉴스 이벤트로 움직이는 교육용 모의투자">
   <title>MARKET LAB — 뉴스 기반 모의투자</title>
-  <link rel="stylesheet" href="/styles.css?v=26">
+  <link rel="stylesheet" href="/styles.css?v=30">
 </head>
 <body>
   <header class="topbar">
@@ -33,10 +33,18 @@
             <span class="menu-item-icon" aria-hidden="true">⚡</span>
             <span><strong>뉴스</strong><small>뉴스 발행 및 변동 관리</small></span>
           </button>
+          <button class="menu-item" type="button" data-view-target="assets">
+            <span class="menu-item-icon" aria-hidden="true">◉</span>
+            <span><strong>보유자산 현황</strong><small>현금·종목 비중 및 매수분 확인</small></span>
+          </button>
           <button class="menu-item" type="button" data-view-target="trades">
             <span class="menu-item-icon" aria-hidden="true">≡</span>
             <span><strong>내 거래내역</strong><small>전체 매수·매도 체결 내역</small></span>
           </button>
+          <a class="menu-item" href="/finance/krx">
+            <span class="menu-item-icon" aria-hidden="true">▥</span>
+            <span><strong>금융 데이터 랩</strong><small>시장·경제·금융회사·기업공시</small></span>
+          </a>
         </nav>
         <div class="drawer-foot"><strong>MARKET LAB</strong><span>교육용 가상 시장</span></div>
       </aside>
@@ -117,7 +125,7 @@
 
     <section class="account-grid" aria-label="계좌 요약">
       <article><div class="stat-icon navy">₩</div><div><span>총 자산</span><strong id="total-assets">-</strong><small id="total-profit">-</small></div></article>
-      <article><div class="stat-icon blue">↔</div><div><span>주문 가능 현금</span><strong id="cash">-</strong><small>초기자금 100,000,000원</small></div></article>
+      <article><div class="stat-icon blue">↔</div><div><span>주문 가능 현금</span><strong id="cash">-</strong><small id="cash-detail">초기자금 100,000,000원</small></div></article>
       <article><div class="stat-icon mint">▥</div><div><span>주식 평가금액</span><strong id="stock-value">-</strong><small id="position-count">보유 종목 0개</small></div></article>
       <article><div class="stat-icon orange">◎</div><div><span>투자 수익률</span><strong id="return-rate">-</strong><small>평가손익 기준</small></div></article>
     </section>
@@ -151,7 +159,7 @@
         </header>
         <div id="price-chart" class="price-chart" aria-label="선택 종목 가격 차트"></div>
         <div class="chart-legend">
-          <span><i class="candle up"></i>상승</span><span><i class="candle down"></i>하락</span><span><i class="news"></i>뉴스</span>
+          <span><i class="candle up"></i>상승</span><span><i class="candle down"></i>하락</span><span><i class="news"></i>뉴스</span><span><i class="reservation buy"></i>예수</span><span><i class="reservation sell"></i>예도</span>
           <label class="chart-count-select" for="chart-point-limit">
             <select id="chart-point-limit" aria-label="차트 표시 개수">
               <option value="10">10개씩 보기</option>
@@ -173,8 +181,21 @@
         <header class="panel-head"><div><small>QUICK ORDER</small><h2>주문하기</h2></div></header>
         <div class="selected-stock"><span>선택 종목</span><strong id="order-name">-</strong><small id="order-code">-</small><b id="order-price">-</b></div>
         <form id="order-form">
-          <div class="side-toggle"><button type="button" class="active" data-side="buy">매수</button><button type="button" data-side="sell">매도</button></div>
-          <label class="field"><span>주문 수량</span><div class="input-suffix"><input id="quantity" type="number" value="1" min="1" required><b>주</b></div></label>
+          <div class="order-mode-toggle" role="tablist" aria-label="주문 방식">
+            <button type="button" class="active buy" data-order-mode="buy" role="tab" aria-selected="true">매수</button>
+            <button type="button" class="sell" data-order-mode="sell" role="tab" aria-selected="false">매도</button>
+            <button type="button" class="buy" data-order-mode="reserved-buy" role="tab" aria-selected="false">예약 매수</button>
+            <button type="button" class="sell" data-order-mode="reserved-sell" role="tab" aria-selected="false">예약 매도</button>
+          </div>
+          <div id="cost-method-picker" class="cost-method-picker" hidden>
+            <span>매수분 선택 방식</span>
+            <div class="cost-method-toggle" role="group" aria-label="매도 원가 계산 방식">
+              <button type="button" data-cost-method="fifo" title="가장 오래된 매수분부터 매도">FIFO</button>
+              <button type="button" data-cost-method="lifo" title="가장 최근 매수분부터 매도">LIFO</button>
+              <button type="button" class="active" data-cost-method="lofo" title="체결가가 가장 낮은 매수분부터 매도">LOFO</button>
+            </div>
+          </div>
+          <label class="field quantity-field"><span>주문 수량</span><div class="input-suffix"><input id="quantity" type="number" value="1" min="1" required><b>주</b></div></label>
           <div class="quick-order">
             <span id="quick-order-label">현금 기준 빠른 주문</span>
             <div class="quick-quantity">
@@ -182,10 +203,15 @@
               <button type="button" data-ratio="0.1">10%</button><button type="button" data-ratio="0.2">20%</button><button type="button" data-ratio="0.3">30%</button><button type="button" data-ratio="0.5">50%</button><button type="button" data-ratio="1">전량</button>
             </div>
           </div>
+          <label class="field reservation-price-field" hidden><span id="reservation-price-label">예약 매수가</span><div class="input-suffix"><input id="reservation-price" type="number" min="1000" step="10" inputmode="numeric" placeholder="목표 가격"><b>원</b></div></label>
           <div class="estimate"><span>예상 주문금액</span><strong id="estimate">-</strong></div>
           <button id="order-submit" class="primary-action buy" type="submit">매수 주문</button>
         </form>
-        <p class="fine-print"><span>i</span> 서버의 체결 시점 가격으로 즉시 주문됩니다.</p>
+        <p class="fine-print"><span>i</span><b id="order-guide">서버의 체결 시점 가격으로 즉시 주문됩니다.</b></p>
+        <section class="reserved-order-section" aria-labelledby="reserved-order-title" hidden>
+          <header><strong id="reserved-order-title">예약 대기</strong><span id="reserved-order-count">0건</span></header>
+          <div id="reserved-order-list" class="reserved-order-list"><p>대기 중인 예약 주문이 없습니다.</p></div>
+        </section>
       </aside>
     </section>
 
@@ -238,6 +264,37 @@
       </section>
     </section>
 
+    <section id="view-assets" class="app-view" data-view="assets" hidden>
+      <section class="hero view-hero assets-hero">
+        <div>
+          <div class="eyebrow"><span>PORTFOLIO</span> 현금과 보유 종목의 자산 구성</div>
+          <h1>나의 <em>보유자산 현황</em></h1>
+          <p>총자산에서 현금과 각 종목이 차지하는 비중을 확인하고, 보유 중인 매수 체결분을 살펴보세요.</p>
+        </div>
+      </section>
+
+      <section class="panel asset-allocation-panel">
+        <header class="panel-head">
+          <div><small>ASSET ALLOCATION</small><h2>자산 구성</h2></div>
+          <span id="asset-allocation-count" class="history-count-badge">현금 + 0종목</span>
+        </header>
+        <div class="asset-allocation-layout">
+          <div id="asset-chart" class="asset-chart" role="img" aria-label="자산 구성 파이그래프"></div>
+          <div id="asset-legend" class="asset-legend"></div>
+        </div>
+      </section>
+
+      <section class="panel asset-holdings-panel">
+        <header class="panel-head">
+          <div><small>HOLDINGS BREAKDOWN</small><h2>종목별 평가금액</h2></div>
+          <span class="asset-detail-hint">종목을 누르면 매수 체결분이 펼쳐집니다</span>
+        </header>
+        <div id="asset-position-list" class="asset-position-list">
+          <div class="asset-empty">보유 중인 종목이 없습니다.</div>
+        </div>
+      </section>
+    </section>
+
     <section id="view-trades" class="app-view" data-view="trades" hidden>
       <section class="hero view-hero history-hero">
         <div>
@@ -250,6 +307,7 @@
         <article><div class="stat-icon navy">#</div><div><span>전체 체결 건수</span><strong id="history-trade-count">0건</strong><small>매수·매도 전체</small></div></article>
         <article><div class="stat-icon red">↗</div><div><span>누적 매수 금액</span><strong id="history-buy-total">₩0</strong><small id="history-buy-count">매수 0건</small></div></article>
         <article><div class="stat-icon blue">↘</div><div><span>누적 매도 금액</span><strong id="history-sell-total">₩0</strong><small id="history-sell-count">매도 0건</small></div></article>
+        <article><div class="stat-icon mint">±</div><div><span>누적 실현손익</span><strong id="history-realized-profit">₩0</strong><small>선택 원가방식 기준</small></div></article>
       </section>
       <section class="panel trade-history-panel">
         <header class="panel-head">
@@ -258,8 +316,8 @@
         </header>
         <div class="table-scroll">
           <table class="data-table trade-history-table">
-            <thead><tr><th>체결시간</th><th>구분</th><th>종목</th><th>종목코드</th><th>수량</th><th>체결가</th><th>거래금액</th></tr></thead>
-            <tbody id="trade-history"><tr><td colspan="7" class="empty">거래 내역이 없습니다.</td></tr></tbody>
+            <thead><tr><th>체결시간</th><th>구분</th><th>종목</th><th>종목코드</th><th>수량</th><th>체결가</th><th>거래금액</th><th>원가방식</th><th>실현손익</th></tr></thead>
+            <tbody id="trade-history"><tr><td colspan="9" class="empty">거래 내역이 없습니다.</td></tr></tbody>
           </table>
         </div>
       </section>
@@ -267,6 +325,6 @@
   </main>
 
   <footer><strong>MARKET LAB</strong><span>교육용 가상 시장 · 실제 투자 및 실제 시세와 무관합니다.</span></footer>
-  <script type="module" src="/app.js?v=34"></script>
+  <script type="module" src="/app.js?v=39"></script>
 </body>
 </html>

@@ -8,6 +8,8 @@ const state = {
   authMode: 'login',
   ticker: '005930',
   side: 'buy',
+  orderType: 'immediate',
+  costMethod: 'lofo',
   data: null,
   countdownEnd: 0,
   refreshing: false,
@@ -15,10 +17,12 @@ const state = {
   marketRandomizeUnlocked: false,
   randomNewsInitialized: false,
   lastRandomNewsId: 0,
+  selectedAssetTicker: null,
   positionSort: { key: null, direction: 'asc' },
 };
 
 const CHART_POINT_LIMITS = [10, 20, 30, 60, 100, 200, 240, 480, 1200];
+const ASSET_COLORS = ['#1e63d5', '#e23d48', '#0a9b73', '#e8942f', '#7c5ce7', '#0f9fb3'];
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -31,6 +35,28 @@ function escapeHtml(value) {
 function signedPercent(value) {
   const number = Number(value || 0);
   return `${number > 0 ? '+' : ''}${number.toFixed(2)}%`;
+}
+
+function signedWon(value) {
+  const number = Number(value || 0);
+  return `${number > 0 ? '+' : ''}${won.format(number)}`;
+}
+
+function compactWon(value) {
+  const number = Number(value || 0);
+  if (Math.abs(number) >= 100_000_000) return `${(number / 100_000_000).toFixed(2)}억원`;
+  if (Math.abs(number) >= 10_000) return `${(number / 10_000).toFixed(0)}만원`;
+  return `${integer.format(number)}원`;
+}
+
+function costMethodLabel(value) {
+  return ({ fifo: 'FIFO', lifo: 'LIFO', lofo: 'LOFO', avg: '평균' })[value] || '-';
+}
+
+function realizedProfitMarkup(trade) {
+  if (trade.side !== 'sell' || trade.realized_profit == null) return '<span>-</span>';
+  return `<strong class="trade-profit ${directionClass(trade.realized_profit)}">${signedWon(trade.realized_profit)}</strong>
+    <small>${signedPercent(trade.realized_profit_pct)}</small>`;
 }
 
 function formatVolume(value) {
@@ -166,7 +192,7 @@ function renderAuth() {
     $('#header-user').textContent = state.user.username;
     $('#header-avatar').textContent = state.user.username.slice(0, 1).toUpperCase();
   }
-  setSide(state.side);
+  setOrderMode(state.orderType === 'reserved' ? `reserved-${state.side}` : state.side);
 }
 
 async function initializeAuth() {
@@ -250,7 +276,10 @@ function openSelectedNewsWithKeyboard(event) {
 function renderSummary() {
   const portfolio = state.data.portfolio;
   $('#total-assets').textContent = won.format(portfolio.total_assets);
-  $('#cash').textContent = won.format(portfolio.cash);
+  $('#cash').textContent = won.format(portfolio.available_cash ?? portfolio.cash);
+  $('#cash-detail').textContent = Number(portfolio.reserved_cash || 0) > 0
+    ? `예약 매수로 ${won.format(portfolio.reserved_cash)} 확보`
+    : '초기자금 100,000,000원';
   $('#stock-value').textContent = won.format(portfolio.stock_value);
   $('#position-count').textContent = `보유 종목 ${portfolio.positions.length}개`;
   $('#return-rate').textContent = signedPercent(portfolio.total_profit_pct);
@@ -290,6 +319,25 @@ function renderChart() {
   const volumeBottom = volumeTop + volumeHeight;
   const position = state.data.portfolio.positions
     .find((item) => item.ticker === stock.ticker);
+  const reservationGroups = new Map();
+  (state.data.reserved_orders || [])
+    .filter((order) => order.ticker === stock.ticker)
+    .forEach((order) => {
+      const key = `${order.side}:${order.target_price}`;
+      const existing = reservationGroups.get(key);
+      if (existing) {
+        existing.orderCount += 1;
+        existing.quantity += Number(order.quantity);
+      } else {
+        reservationGroups.set(key, {
+          side: order.side,
+          targetPrice: Number(order.target_price),
+          orderCount: 1,
+          quantity: Number(order.quantity),
+        });
+      }
+    });
+  const reservationLevels = [...reservationGroups.values()];
   const maxVolume = Math.max(1, ...points.map((point) => Number(point.volume || 0)));
   const candles = points.map((point, index) => {
     const close = Number(point.price);
@@ -308,6 +356,7 @@ function renderChart() {
   });
   const scalePrices = candles.flatMap((candle) => [candle.high, candle.low]);
   if (position) scalePrices.push(Number(position.avg_price));
+  scalePrices.push(...reservationLevels.map((level) => level.targetPrice));
   const rawMin = Math.min(...scalePrices), rawMax = Math.max(...scalePrices);
   const padding = Math.max((rawMax - rawMin) * .08, rawMax * .002, 10);
   const min = rawMin - padding, max = rawMax + padding;
@@ -362,6 +411,16 @@ function renderChart() {
   const averagePriceLine = position
     ? `<line class="average-price-line" x1="${margin.left}" y1="${y(Number(position.avg_price))}" x2="${margin.left + plotWidth}" y2="${y(Number(position.avg_price))}" />`
     : '';
+  const reservationLines = reservationLevels.map((level) => {
+    const py = y(level.targetPrice);
+    const shortLabel = level.side === 'buy' ? '예수' : '예도';
+    const detail = level.orderCount > 1 ? ` · ${level.orderCount}건` : '';
+    return `<g class="reservation-price-level ${level.side}">
+      <title>${level.side === 'buy' ? '예약 매수' : '예약 매도'} ${integer.format(level.targetPrice)}원 · ${integer.format(level.quantity)}주</title>
+      <line x1="${margin.left}" y1="${py}" x2="${margin.left + plotWidth}" y2="${py}" />
+      <text x="${margin.left + 5}" y="${Math.max(margin.top + 9, py - 4)}">${shortLabel} ${integer.format(level.targetPrice)}${detail}</text>
+    </g>`;
+  }).join('');
   const currentY = y(Number(stock.price));
   const currentColor = Number(stock.change_pct) >= 0 ? '#ef244f' : '#2563eb';
   const currentPrice = `<line class="current-price-line" x1="${margin.left}" y1="${currentY}" x2="${margin.left + plotWidth}" y2="${currentY}" stroke="${currentColor}" />
@@ -381,7 +440,7 @@ function renderChart() {
     <rect id="chart-hover-capture" class="chart-hover-capture" x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${volumeBottom - margin.top}" />`;
 
   host.innerHTML = `<svg class="${densityClass}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(stock.name)} 캔들 차트">
-    ${verticalGrid}${horizontalGrid}${newsBands}${candleShapes}${averagePriceLine}${currentPrice}
+    ${verticalGrid}${horizontalGrid}${newsBands}${candleShapes}${averagePriceLine}${reservationLines}${currentPrice}
     <line class="volume-divider" x1="${margin.left}" y1="${volumeTop - 5}" x2="${margin.left + plotWidth}" y2="${volumeTop - 5}" />
     ${volumeBars}${timeLabels}${hoverLayer}
   </svg>`;
@@ -429,10 +488,29 @@ function renderChart() {
 
 function renderOrder() {
   const stock = currentStock();
+  const position = state.data.portfolio.positions
+    .find((item) => item.ticker === stock.ticker);
   $('#order-name').textContent = stock.name;
   $('#order-code').textContent = `${stock.ticker} · ${stock.sector}`;
   $('#order-price').textContent = `${integer.format(stock.price)}원`;
+  $('#reservation-price').placeholder = position
+    ? `현재가 ${integer.format(stock.price)}원 / 평단가 ${integer.format(Math.round(position.avg_price))}원`
+    : `현재가 ${integer.format(stock.price)}원`;
   updateEstimate();
+  renderReservedOrders();
+}
+
+function renderReservedOrders() {
+  const orders = state.data.reserved_orders || [];
+  $('#reserved-order-count').textContent = `${integer.format(orders.length)}건`;
+  $('#reserved-order-list').innerHTML = orders.length ? orders.map((order) => {
+    const condition = order.side === 'buy' ? '이하 도달 시' : '이상 도달 시';
+    return `<article class="reserved-order-item">
+      <strong>${escapeHtml(order.name)}<span class="${order.side}">${order.side === 'buy' ? '예약 매수' : '예약 매도'}</span></strong>
+      <small>${integer.format(order.quantity)}주 · ${integer.format(order.target_price)}원 ${condition}<br>현재 ${integer.format(order.current_price)}원</small>
+      <button type="button" data-cancel-reserved-order="${order.id}" aria-label="${escapeHtml(order.name)} 예약 주문 취소">취소</button>
+    </article>`;
+  }).join('') : '<p>대기 중인 예약 주문이 없습니다.</p>';
 }
 
 function renderNews() {
@@ -523,11 +601,16 @@ function renderTradeHistory() {
   const sells = trades.filter((trade) => trade.side === 'sell');
   const buyTotal = buys.reduce((sum, trade) => sum + Number(trade.total), 0);
   const sellTotal = sells.reduce((sum, trade) => sum + Number(trade.total), 0);
+  const realizedProfit = sells.reduce(
+    (sum, trade) => sum + Number(trade.realized_profit || 0), 0,
+  );
   $('#history-trade-count').textContent = `${integer.format(trades.length)}건`;
   $('#history-buy-total').textContent = won.format(buyTotal);
   $('#history-sell-total').textContent = won.format(sellTotal);
   $('#history-buy-count').textContent = `매수 ${integer.format(buys.length)}건`;
   $('#history-sell-count').textContent = `매도 ${integer.format(sells.length)}건`;
+  $('#history-realized-profit').textContent = signedWon(realizedProfit);
+  $('#history-realized-profit').className = directionClass(realizedProfit);
   $('#history-table-count').textContent = `총 ${integer.format(trades.length)}건`;
   $('#trade-history').innerHTML = trades.length ? trades.map((trade) => `
     <tr>
@@ -538,8 +621,95 @@ function renderTradeHistory() {
       <td>${integer.format(trade.quantity)}주</td>
       <td>${integer.format(trade.price)}원</td>
       <td><strong class="trade-total">${won.format(trade.total)}</strong></td>
+      <td><span class="cost-method-badge">${costMethodLabel(trade.cost_method)}</span></td>
+      <td>${realizedProfitMarkup(trade)}</td>
     </tr>`).join('')
-    : '<tr><td colspan="7" class="empty">거래 내역이 없습니다.</td></tr>';
+    : '<tr><td colspan="9" class="empty">거래 내역이 없습니다.</td></tr>';
+}
+
+function renderAssetOverview() {
+  const portfolio = state.data.portfolio;
+  const positions = portfolio.positions || [];
+  const totalAssets = Number(portfolio.total_assets || 0);
+  const allocations = [
+    { key: 'cash', name: '현금', value: Number(portfolio.cash || 0), color: '#0b1d3a' },
+    ...positions.map((position, index) => ({
+      key: position.ticker,
+      name: position.name,
+      value: Number(position.market_value || 0),
+      color: ASSET_COLORS[index % ASSET_COLORS.length],
+    })),
+  ];
+  const circumference = 2 * Math.PI * 78;
+  let offset = 0;
+  const segments = allocations.filter((item) => item.value > 0).map((item) => {
+    const length = totalAssets ? item.value / totalAssets * circumference : 0;
+    const segment = `<circle class="asset-chart-segment" cx="110" cy="110" r="78"
+      fill="none" stroke="${item.color}" stroke-width="32"
+      stroke-dasharray="${length} ${Math.max(0, circumference - length)}"
+      stroke-dashoffset="${-offset}" transform="rotate(-90 110 110)">
+      <title>${escapeHtml(item.name)} ${won.format(item.value)}</title>
+    </circle>`;
+    offset += length;
+    return segment;
+  }).join('');
+  $('#asset-chart').innerHTML = `
+    <div class="asset-donut-shell">
+      <svg viewBox="0 0 220 220" aria-hidden="true">
+        <circle class="asset-chart-track" cx="110" cy="110" r="78" fill="none" stroke-width="32"></circle>
+        ${segments}
+      </svg>
+      <div class="asset-chart-center"><span>총자산</span><strong>${compactWon(totalAssets)}</strong><small>${won.format(totalAssets)}</small></div>
+    </div>`;
+  $('#asset-chart').setAttribute(
+    'aria-label',
+    allocations.map((item) => `${item.name} ${won.format(item.value)}`).join(', '),
+  );
+  $('#asset-legend').innerHTML = allocations.map((item) => {
+    const percentage = totalAssets ? item.value / totalAssets * 100 : 0;
+    return `<div class="asset-legend-row">
+      <i style="--asset-color:${item.color}" aria-hidden="true"></i>
+      <div><strong>${escapeHtml(item.name)}</strong><small>${item.key === 'cash' ? '주문 가능 현금' : item.key}</small></div>
+      <div><strong>${won.format(item.value)}</strong><small>${percentage.toFixed(1)}%</small></div>
+    </div>`;
+  }).join('');
+  $('#asset-allocation-count').textContent = `현금 + ${integer.format(positions.length)}종목`;
+
+  if (!positions.some((position) => position.ticker === state.selectedAssetTicker)) {
+    state.selectedAssetTicker = null;
+  }
+  $('#asset-position-list').innerHTML = positions.length ? positions.map((position, index) => {
+    const expanded = position.ticker === state.selectedAssetTicker;
+    const share = totalAssets ? Number(position.market_value) / totalAssets * 100 : 0;
+    const lots = position.lots || [];
+    const lotRows = lots.length ? lots.map((lot, lotIndex) => {
+      const partiallySold = lot.remaining_quantity !== lot.original_quantity;
+      const lotTitle = lot.is_average_carryover
+        ? `기존 평균단가 이월 · ${integer.format(lot.remaining_quantity)}주`
+        : `${integer.format(Math.round(lot.price))}원에 ${integer.format(lot.original_quantity)}주 매수`;
+      return `<div class="asset-lot-row">
+        <span class="asset-lot-index">${String(lotIndex + 1).padStart(2, '0')}</span>
+        <div class="asset-lot-main"><strong>${lotTitle}</strong><small>${formatTime(lot.acquired_at)}${lot.is_average_carryover ? ' · 기존 평균단가 잔여분' : ''}</small></div>
+        <div class="asset-lot-balance"><strong>${won.format(Number(lot.price) * Number(lot.remaining_quantity))}</strong><small>${partiallySold ? `현재 ${integer.format(lot.remaining_quantity)}주 보유` : '전량 보유 중'}</small></div>
+      </div>`;
+    }).join('') : '<div class="asset-lot-empty">확인할 수 있는 매수 체결분이 없습니다.</div>';
+    return `<article class="asset-position-card ${expanded ? 'expanded' : ''}">
+      <button class="asset-position-button" type="button" data-asset-ticker="${position.ticker}" aria-expanded="${expanded}">
+        <i style="--asset-color:${ASSET_COLORS[index % ASSET_COLORS.length]}" aria-hidden="true"></i>
+        <span class="asset-position-name"><strong>${escapeHtml(position.name)}</strong><small>${position.ticker}</small></span>
+        <span class="asset-position-quantity"><strong>${integer.format(position.quantity)}주</strong><small>현재가 ${integer.format(position.price)}원</small></span>
+        <span class="asset-position-value"><strong>${won.format(position.market_value)}</strong><small>총자산의 ${share.toFixed(1)}%</small></span>
+        <span class="asset-position-chevron" aria-hidden="true">⌄</span>
+      </button>
+      <div class="asset-lot-detail" ${expanded ? '' : 'hidden'}>
+        <header><div><strong>보유 중인 매수 체결분</strong><small>선택한 매도 원가 방식에 따라 잔여 수량이 달라집니다.</small></div><span>${integer.format(lots.length)}개 lot</span></header>
+        ${lotRows}
+      </div>
+    </article>`;
+  }).join('') : `<div class="asset-empty">
+    <strong>보유 중인 종목이 없습니다.</strong>
+    <span>현재 자산은 모두 현금으로 구성되어 있습니다.</span>
+  </div>`;
 }
 
 function renderStockOptions() {
@@ -559,6 +729,7 @@ function render() {
   renderRecentNews();
   renderTables();
   renderTradeHistory();
+  renderAssetOverview();
   renderStockOptions();
 }
 
@@ -592,6 +763,7 @@ async function refresh({ silent = false } = {}) {
 function selectTicker(ticker) {
   if (!ticker || ticker === state.ticker) return;
   state.ticker = ticker;
+  $('#reservation-price').value = '';
   if (state.data) {
     renderStocks();
     renderTables();
@@ -613,20 +785,51 @@ function selectTickerFromRowWithKeyboard(event) {
 function updateEstimate() {
   const stock = currentStock();
   const quantity = Math.max(0, Number($('#quantity').value || 0));
-  $('#estimate').textContent = stock ? won.format(stock.price * quantity) : '-';
+  const targetPrice = state.orderType === 'reserved'
+    ? Number($('#reservation-price').value || 0)
+    : 0;
+  const price = targetPrice || stock?.price;
+  $('#estimate').textContent = price ? won.format(price * quantity) : '-';
 }
 
-function setSide(side) {
+function setOrderMode(mode) {
+  const reserved = mode === 'reserved-buy' || mode === 'reserved-sell';
+  const side = mode.endsWith('sell') ? 'sell' : 'buy';
   state.side = side;
-  document.querySelectorAll('.side-toggle button').forEach((button) => {
-    button.classList.toggle('active', button.dataset.side === side);
+  state.orderType = reserved ? 'reserved' : 'immediate';
+  document.querySelectorAll('.order-mode-toggle button').forEach((button) => {
+    const active = button.dataset.orderMode === mode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
   });
   const submit = $('#order-submit');
-  submit.textContent = state.user ? (side === 'buy' ? '매수 주문' : '매도 주문') : '로그인 후 주문';
+  const actionLabel = reserved
+    ? (side === 'buy' ? '예약 매수' : '예약 매도')
+    : (side === 'buy' ? '매수 주문' : '매도 주문');
+  submit.textContent = state.user ? actionLabel : '로그인 후 주문';
   submit.className = `primary-action ${side}`;
+  $('#cost-method-picker').hidden = side !== 'sell';
+  $('#reservation-price').required = reserved;
+  $('.reservation-price-field').hidden = !reserved;
+  $('.reserved-order-section').hidden = !reserved;
+  $('#reservation-price-label').textContent = side === 'buy' ? '예약 매수가' : '예약 매도가';
+  $('#order-guide').textContent = reserved
+    ? (side === 'buy'
+      ? '현재가가 목표가 이하에 도달하면 서버 체결가로 예약 매수됩니다.'
+      : '현재가가 목표가 이상에 도달하면 서버 체결가로 예약 매도됩니다.')
+    : '서버의 체결 시점 가격으로 즉시 주문됩니다.';
   $('#quick-order-label').textContent = side === 'buy'
     ? '주문 가능 현금 기준 빠른 주문'
     : '선택 종목 보유 수량 기준 빠른 주문';
+  updateEstimate();
+}
+
+function setCostMethod(costMethod) {
+  if (!['fifo', 'lifo', 'lofo'].includes(costMethod)) return;
+  state.costMethod = costMethod;
+  document.querySelectorAll('.cost-method-toggle button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.costMethod === costMethod);
+  });
 }
 
 function setMenuOpen(open) {
@@ -638,7 +841,7 @@ function setMenuOpen(open) {
 }
 
 function setView(view, { updateHash = true } = {}) {
-  const activeView = ['trading', 'news', 'trades'].includes(view) ? view : 'trading';
+  const activeView = ['trading', 'news', 'assets', 'trades'].includes(view) ? view : 'trading';
   document.querySelectorAll('.app-view').forEach((element) => {
     element.hidden = element.dataset.view !== activeView;
   });
@@ -671,10 +874,23 @@ $('#positions-table thead').addEventListener('click', (event) => {
   renderTables();
 });
 
+$('#asset-position-list').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-asset-ticker]');
+  if (!button) return;
+  state.selectedAssetTicker = state.selectedAssetTicker === button.dataset.assetTicker
+    ? null
+    : button.dataset.assetTicker;
+  renderAssetOverview();
+});
+
 $('#refresh').addEventListener('click', () => refresh());
 $('#quantity').addEventListener('input', updateEstimate);
-document.querySelectorAll('.side-toggle button').forEach((button) => {
-  button.addEventListener('click', () => setSide(button.dataset.side));
+$('#reservation-price').addEventListener('input', updateEstimate);
+document.querySelectorAll('.order-mode-toggle button').forEach((button) => {
+  button.addEventListener('click', () => setOrderMode(button.dataset.orderMode));
+});
+document.querySelectorAll('.cost-method-toggle button').forEach((button) => {
+  button.addEventListener('click', () => setCostMethod(button.dataset.costMethod));
 });
 
 document.querySelectorAll('.quick-quantity button').forEach((button) => {
@@ -685,10 +901,15 @@ document.querySelectorAll('.quick-quantity button').forEach((button) => {
     if (button.dataset.ratio) {
       const ratio = Number(button.dataset.ratio);
       if (state.side === 'buy') {
-        quantity = Math.floor((state.data.portfolio.cash * ratio) / stock.price);
+        const targetPrice = state.orderType === 'reserved'
+          ? Number($('#reservation-price').value) || stock.price
+          : stock.price;
+        const availableCash = state.data.portfolio.available_cash ?? state.data.portfolio.cash;
+        quantity = Math.floor((availableCash * ratio) / targetPrice);
       } else {
-        const held = state.data.portfolio.positions
-          .find((item) => item.ticker === stock.ticker)?.quantity || 0;
+        const position = state.data.portfolio.positions
+          .find((item) => item.ticker === stock.ticker);
+        const held = position?.available_quantity ?? position?.quantity ?? 0;
         quantity = Math.floor(held * ratio);
       }
     }
@@ -764,17 +985,35 @@ $('#order-form').addEventListener('submit', async (event) => {
     showAuthModal('login');
     return;
   }
+  const reserved = state.orderType === 'reserved';
+  const targetPrice = Number($('#reservation-price').value);
+  if (reserved && (!Number.isInteger(targetPrice) || targetPrice < 1000)) {
+    toast('예약 가격을 1,000원 이상으로 입력하세요.', 'error');
+    $('#reservation-price').focus();
+    return;
+  }
   const submit = $('#order-submit');
   submit.disabled = true;
   try {
-    const result = await api('/api/market/orders', {
+    const result = await api(
+      reserved ? '/api/market/reserved-orders' : '/api/market/orders', {
       method: 'POST',
       body: JSON.stringify({
         ticker: state.ticker, side: state.side,
         quantity: Number($('#quantity').value),
+        ...(reserved ? { target_price: targetPrice } : {}),
+        cost_method: state.costMethod,
       }),
     });
-    toast(`${result.message} · ${won.format(result.total)}`);
+    if (reserved) {
+      toast(result.message);
+      $('#reservation-price').value = '';
+    } else {
+      const profitText = result.realized_profit == null
+        ? ''
+        : ` · ${costMethodLabel(result.cost_method)} 실현손익 ${signedWon(result.realized_profit)}`;
+      toast(`${result.message} · ${won.format(result.total)}${profitText}`);
+    }
     await refresh();
   } catch (error) {
     if (error.status === 401) {
@@ -785,6 +1024,23 @@ $('#order-form').addEventListener('submit', async (event) => {
     toast(error.message, 'error');
   } finally {
     submit.disabled = false;
+  }
+});
+
+$('#reserved-order-list').addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-cancel-reserved-order]');
+  if (!button) return;
+  button.disabled = true;
+  try {
+    const result = await api(
+      `/api/market/reserved-orders/${button.dataset.cancelReservedOrder}`,
+      { method: 'DELETE' },
+    );
+    toast(result.message);
+    await refresh();
+  } catch (error) {
+    toast(error.message, 'error');
+    button.disabled = false;
   }
 });
 
@@ -840,7 +1096,9 @@ $('#sell-all').addEventListener('click', async () => {
   try {
     let result;
     try {
-      result = await api('/api/market/accounts/sell-all', { method: 'POST' });
+      result = await api('/api/market/accounts/sell-all', {
+        method: 'POST', body: JSON.stringify({ cost_method: state.costMethod }),
+      });
     } catch (error) {
       if (![404, 405].includes(error.status)) throw error;
       let total = 0;
@@ -851,6 +1109,7 @@ $('#sell-all').addEventListener('click', async () => {
             ticker: position.ticker,
             side: 'sell',
             quantity: position.quantity,
+            cost_method: state.costMethod,
           }),
         });
         total += Number(sold.total || 0);

@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .finance import app as finance_app
 from .market import MarketEngine, MarketError, SESSION_MAX_AGE_SECONDS
 
 
@@ -21,6 +22,15 @@ class OrderRequest(BaseModel):
     ticker: str = Field(pattern=r"^\d{6}$")
     side: str = Field(pattern="^(buy|sell)$")
     quantity: int = Field(ge=1)
+    cost_method: str = Field(default="lofo", pattern="^(fifo|lifo|lofo)$")
+
+
+class ReservedOrderRequest(OrderRequest):
+    target_price: int = Field(ge=1_000)
+
+
+class SellAllRequest(BaseModel):
+    cost_method: str = Field(default="lofo", pattern="^(fifo|lifo|lofo)$")
 
 
 class AuthRequest(BaseModel):
@@ -116,6 +126,28 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             ticker=request.ticker,
             side=request.side,
             quantity=request.quantity,
+            cost_method=request.cost_method,
+        )
+
+    @app.post("/api/market/reserved-orders", status_code=201)
+    async def reserve_order(
+        request: ReservedOrderRequest, user: dict = Depends(current_user),
+    ) -> dict:
+        return engine.reserve_order(
+            user_id=engine.account_id_for_user(user["id"]),
+            ticker=request.ticker,
+            side=request.side,
+            quantity=request.quantity,
+            target_price=request.target_price,
+            cost_method=request.cost_method,
+        )
+
+    @app.delete("/api/market/reserved-orders/{order_id}")
+    async def cancel_reserved_order(
+        order_id: int, user: dict = Depends(current_user),
+    ) -> dict:
+        return engine.cancel_reserved_order(
+            engine.account_id_for_user(user["id"]), order_id,
         )
 
     @app.post("/api/market/news")
@@ -136,13 +168,20 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         return engine.reset_account(engine.account_id_for_user(user["id"]))
 
     @app.post("/api/market/accounts/sell-all")
-    async def sell_all(user: dict = Depends(current_user)) -> dict:
-        return engine.sell_all(engine.account_id_for_user(user["id"]))
+    async def sell_all(
+        payload: SellAllRequest | None = None,
+        user: dict = Depends(current_user),
+    ) -> dict:
+        return engine.sell_all(
+            engine.account_id_for_user(user["id"]),
+            cost_method=payload.cost_method if payload else "lofo",
+        )
 
     @app.post("/api/market/randomize")
     async def randomize_market(_: dict = Depends(current_user)) -> dict:
         return engine.randomize_market()
 
+    app.mount("/finance", finance_app, name="finance")
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app
 

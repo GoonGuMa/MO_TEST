@@ -3,6 +3,9 @@
 실제 주식 API 없이 운영되는 교육용 모의투자 웹앱입니다.
 
 - 모든 종목은 서버 기준으로 15초마다 랜덤거래량에 따라 '0~+-7%' 변동
+- 기준가의 60% 이하에서는 상승 확률이 65%로 높아지고 하락폭은 절반으로 축소
+- 기준가의 140% 이상에서는 하락 확률이 65%로 높아지고 상승폭은 절반으로 축소
+- 일반 변동과 뉴스 모두 종목별 기준가의 30~250% 범위로 제한
 - 긍정 뉴스는 선택 종목 또는 전체 시장을 `+15~25%` 변동
 - 부정 뉴스는 선택 종목 또는 전체 시장을 `-15~25%` 변동
 - 3~5분마다 자동 뉴스가 발행되며 선택 종목을 `±7~10%` 변동
@@ -11,6 +14,10 @@
 - 한글 아이디를 지원하는 회원가입·로그인과 사용자별 계좌 분리
 - 비밀번호 해시 저장 및 7일 로그인 세션 쿠키
 - 주문 가격과 잔고 계산은 서버에서 처리
+- 목표가 이하 매수·목표가 이상 매도 예약, 예약 취소 및 예약분 현금·수량 확보
+- 매도마다 FIFO·LIFO·LOFO 원가 방식을 선택하고 실현손익·수익률 기록
+- 매수 체결별 보유 lot과 잔여 수량을 SQLite에 저장
+- 보유자산 현황에서 현금·종목별 비중과 평가금액, 잔여 매수 lot 조회
 - 같은 아이디로 로그인하면 다른 브라우저에서도 계좌 유지
 
 ## 실행
@@ -25,22 +32,38 @@ python3 -m venv .venv
 브라우저에서 <http://localhost:8080>을 엽니다. API 문서는
 <http://localhost:8080/docs>에서 확인할 수 있습니다.
 
+왼쪽 메뉴의 **금융 데이터 랩**을 선택하면 통합된 금융 화면으로 이동합니다.
+
+- KRX 시장: <http://localhost:8080/finance/krx>
+- 금융감독원 금융회사: <http://localhost:8080/finance/fss>
+- 한국은행 경제지표: <http://localhost:8080/finance/ecos>
+- OpenDART 기업공시: <http://localhost:8080/finance/dart>
+- 금융 API 문서: <http://localhost:8080/finance/docs>
+
 ## Docker로 실행
 
-Docker Hub 이미지를 내려받아 실행합니다. 회원 및 거래 데이터를 계속 보존하려면
-이름이 있는 볼륨을 `/app/data`에 연결하세요.
+프로젝트 루트에서 환경변수 예시 파일을 복사하고 필요한 API 키를 입력합니다.
 
 ```bash
-docker pull gogumaa/mo-test:0.3
-docker run --name motest -p 8080:8080 \
-  -v motest-data:/app/data \
-  -e MOCK_MARKET_ADMIN_KEY='원하는-비밀키' \
-  gogumaa/mo-test:0.3
+cp .env.example .env
+docker volume create motest-data
+docker compose up --build -d
 ```
 
-브라우저에서 <http://localhost:8080>을 열고, 종료할 때는
-`docker stop motest`를 실행합니다. 운영자 키가 필요하지 않으면 `-e` 줄은 생략할 수
-있습니다.
+`.env`에는 필요한 값만 입력하면 됩니다.
+
+```dotenv
+MOCK_MARKET_ADMIN_KEY=뉴스발행용비밀키
+FSS_API_KEY=금융감독원_API키
+KRX_API_KEY=한국거래소_API키
+ECOS_API_KEY=한국은행_API키
+DART_API_KEY=OpenDART_API키
+```
+
+브라우저에서 <http://localhost:8080>을 엽니다. 컨테이너를 종료할 때는
+`docker compose down`, 다시 시작할 때는 `docker compose up -d`를 사용합니다.
+회원·거래 데이터는 기존 0.3 버전과 같은 `motest-data` Docker 볼륨에 보존됩니다. `.env`는 Git에서
+제외되며 Docker 이미지 안에도 복사되지 않습니다.
 
 ## GitHub Codespaces에서 공유
 
@@ -53,10 +76,10 @@ Codespace가 중지되면 앱도 중지되며, 재시작 후 포트 공개 설�
 
 ## 회원 데이터 보존
 
-회원, 계좌, 보유 종목, 거래 내역은 `data/market.sqlite3`에 저장됩니다. 같은
-Codespace를 중지·재실행하거나 컨테이너를 Rebuild해도 `/workspaces`의 데이터는
-유지됩니다. Codespace를 삭제하고 새로 만들면 데이터가 초기화되므로 수업 기록을
-보존하려면 삭제 전에 SQLite 파일을 내려받아 백업하세요.
+회원, 계좌, 보유 종목, 거래 내역은 컨테이너의 `/app/data/market.sqlite3`에
+저장됩니다. `compose.yaml`이 외부 `motest-data` 볼륨을 재사용하므로 컨테이너를
+다시 만들거나 이미지를 재빌드해도 데이터가 유지되고, `docker compose down -v`에도
+이 외부 볼륨은 삭제되지 않습니다.
 
 ## 뉴스 발행 보호
 
@@ -72,7 +95,7 @@ MOCK_MARKET_ADMIN_KEY='원하는-비밀키' .venv/bin/uvicorn app.main:app --hos
 ## 테스트
 
 ```bash
-.venv/bin/pytest -q
+.venv/bin/python -m pytest -q
 ```
 
 ## 뉴스발행
