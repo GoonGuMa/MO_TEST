@@ -12,11 +12,15 @@ import pytest
 from app.main import create_app
 from app.market import (
     BASE_CHANGE_MAX,
+    PRICE_FLOOR_RATIO,
     RANDOM_NEWS_CHANGE_MAX,
     RANDOM_NEWS_CHANGE_MIN,
     RANDOM_NEWS_INTERVAL_MAX,
     RANDOM_NEWS_INTERVAL_MIN,
     RANDOM_NEWS_SCENARIOS,
+    RECOVERY_DOWN_MULTIPLIER,
+    RECOVERY_THRESHOLD_RATIO,
+    RECOVERY_UP_PROBABILITY,
     STOCKS,
 )
 
@@ -114,6 +118,65 @@ def test_normal_tick_moves_every_stock_within_configured_range(market_app):
         assert (current["change_pct"] > 0) == (current["buy_volume"] > current["sell_volume"])
 
 
+class DirectionRng:
+    def __init__(self, direction_roll):
+        self.direction_roll = direction_roll
+
+    def uniform(self, low, high):
+        return (low + high) / 2
+
+    def random(self):
+        return self.direction_roll
+
+
+def test_recovery_mode_favors_gains_and_halves_losses(market_app):
+    assert RECOVERY_THRESHOLD_RATIO == 0.60
+    assert RECOVERY_UP_PROBABILITY == 0.70
+    assert RECOVERY_DOWN_MULTIPLIER == 0.50
+    app, _database = market_app
+    engine = app.state.market
+
+    engine.rng = DirectionRng(0.69)
+    buy_volume, sell_volume, recovery_gain = engine._virtual_flow(
+        50_000, recovery_mode=True,
+    )
+    assert recovery_gain > 0
+    assert buy_volume > sell_volume
+
+    engine.rng = DirectionRng(0.71)
+    _buy_volume, _sell_volume, recovery_loss = engine._virtual_flow(
+        50_000, recovery_mode=True,
+    )
+    engine.rng = DirectionRng(0.49)
+    _buy_volume, _sell_volume, normal_loss = engine._virtual_flow(50_000)
+    assert recovery_loss < 0
+    assert recovery_loss == pytest.approx(normal_loss * RECOVERY_DOWN_MULTIPLIER)
+
+
+def test_normal_tick_cannot_fall_below_stock_floor(market_app):
+    assert PRICE_FLOOR_RATIO == 0.40
+    app, database = market_app
+    snapshot(app)
+    floor = round(84_000 * PRICE_FLOOR_RATIO / 10) * 10
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE market_state SET price = ?, previous_price = ? WHERE ticker = '005930'",
+            (floor, floor),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'",
+            (str(time.time() - 15.2),),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'next_random_news_at'",
+            (str(time.time() + 300),),
+        )
+        conn.commit()
+    app.state.market.rng = DirectionRng(0.99)
+
+    assert stock(snapshot(app))["price"] == floor
+
+
 def test_positive_news_applies_twenty_percent_to_selected_stock(market_app):
     app, database = market_app
     old_price = stock(snapshot(app))["price"]
@@ -151,6 +214,42 @@ def test_positive_news_applies_twenty_percent_to_selected_stock(market_app):
     assert news_flow["volume"] == news_flow["buy_volume"] + news_flow["sell_volume"]
     assert news_flow["buy_volume"] > news_flow["sell_volume"]
     assert stock(snapshot(app))["price"] == stock(after)["price"]
+
+
+def test_negative_news_cannot_break_stock_floor(market_app):
+    app, database = market_app
+    snapshot(app)
+    floor = round(84_000 * PRICE_FLOOR_RATIO / 10) * 10
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE market_state SET price = 34000, previous_price = 34000 "
+            "WHERE ticker = '005930'"
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'last_tick_at'",
+            (str(time.time()),),
+        )
+        conn.execute(
+            "UPDATE market_meta SET value = ? WHERE key = 'next_random_news_at'",
+            (str(time.time() + 300),),
+        )
+        conn.commit()
+    response = request(app, "POST", "/api/market/news", json={
+        "title": "최저가 검증 뉴스", "content": "가격 하한을 검증합니다.",
+        "sentiment": "negative", "ticker": "005930", "impact_pct": 25,
+        "admin_key": "",
+    })
+    assert response.status_code == 200
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE news SET effective_at = ? WHERE id = ?",
+            (time.time() - 0.1, response.json()["news_id"]),
+        )
+        conn.commit()
+
+    after = snapshot(app)
+    assert stock(after)["price"] == floor
+    assert after["history"][-1]["event_type"] == "news"
 
 
 
